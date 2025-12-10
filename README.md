@@ -1,4 +1,4 @@
-# Hackthon App
+# CloudGuard IDS Web App
 
 A modern React application built with Vite, featuring TailwindCSS, shadcn/ui components, and various libraries for routing, animations, and charts.
 
@@ -11,7 +11,7 @@ A modern React application built with Vite, featuring TailwindCSS, shadcn/ui com
 - 🛣️ **React Router** - Client-side routing
 - 🎭 **Framer Motion** - Animation library
 - 📊 **Chart.js** - Data visualization
-- ✨ **TSParticles** - Particle effects
+
 
 ## Getting Started
 
