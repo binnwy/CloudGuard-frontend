@@ -1,0 +1,37 @@
+# === Hackthon Project Rules ===
+
+# Framework & Setup
+- Always use Vite + React (JavaScript).
+- Styling must use TailwindCSS and shadcn/ui components.
+- Do not create raw CSS files unless absolutely required.
+
+# Components
+- Prefer shadcn/ui components (Button, Card, Table, etc.).
+- Use Tailwind classes for layout, spacing, colors.
+- Do not use inline styles unless absolutely necessary.
+
+# Pages
+- Project has 3 main pages:
+  1. Landing Page (Hero + Features + Footer)
+  2. Dashboard (Charts + Starfield Animation)
+  3. Detail Page (Card + Table + Info)
+
+# Libraries
+- react-router-dom for routing.
+- framer-motion for animations.
+- react-chartjs-2 + chart.js for charts.
+- react-tsparticles for starfield background.
+
+# Deployment
+- Assume Netlify as deployment target.
+- Must keep build command as `npm run build`.
+
+# Code Quality
+- Keep code modular: components go in `src/components/`, pages in `src/pages/`.
+- Use functional components only (no class components).
+- Always prefer reusable components (e.g., ChartCard instead of repeating code).
+
+# Special Notes
+- Project name is "hackthon".
+- Theme: Dark background (gray-900 / black) + white text.
+- Must run with `npm run dev` without errors before deployment.
