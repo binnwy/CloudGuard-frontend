@@ -81,11 +81,9 @@ const mockThreatSourceData = [
 
 // Mock Chat History (now with stable ids)
 const initialChatHistory = [
-  { id: 'init-0', type: 'bot', text: 'Welcome! I am CloudGuard AI. How can I assist with your security analysis today?' },
-  { id: 'init-1', type: 'user', text: 'Summarize the high-severity attacks in the last 24 hours.' },
-  { id: 'init-2', type: 'bot', text: 'In the last 24 hours, the system recorded 30 major high-severity attacks, peaking at 12:00 with 30 incidents. The primary source was identified as a DDOS vector. All alerts were addressed.' },
-  { id: 'init-3', type: 'user', text: 'What is the current system uptime percentage?' },
-  { id: 'init-4', type: 'bot', text: 'The current system uptime is 68%, showing a 10% improvement over the previous period.' },
+  { type: 'bot',
+    text: ' Hi! I’m CloudGuard AI. Ask me about recent attacks, traffic, or security activity.'
+  }  
 ];
 
 // --- Custom Components ---

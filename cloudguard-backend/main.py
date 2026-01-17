@@ -1,18 +1,23 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-import psycopg2
-from psycopg2.extras import RealDictCursor
+from supabase import create_client
+from dotenv import load_dotenv
+import os
 
-# --- DATABASE CONFIGURATION ---
-DB_CONFIG = {
-    "dbname": "cloudguard",
-    "user": "postgres",
-    "password": "1234567",  # <--- REMEMBER TO UPDATE THIS!
-    "host": "localhost",
-    "port": "5432"
-}
+# =====================
+# LOAD ENV
+# =====================
+load_dotenv()
 
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# =====================
+# FASTAPI APP
+# =====================
 app = FastAPI()
 
 app.add_middleware(
@@ -23,67 +28,88 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# =====================
+# MODELS
+# =====================
 class ChatRequest(BaseModel):
     message: str
 
 class ChatResponse(BaseModel):
     answer: str
 
-def get_recent_logs(limit=5):
+# =====================
+# DATABASE ACCESS
+# =====================
+def get_recent_logs(limit=100):
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        query = """
-            SELECT source_ip, attack_type, action_taken, detected_at, geo_location, classification 
-            FROM vpc_logs 
-            ORDER BY detected_at DESC 
-            LIMIT %s;
-        """
-        cur.execute(query, (limit,))
-        logs = cur.fetchall()
-        cur.close()
-        conn.close()
-        return logs
+        response = (
+            supabase
+            .table("cloudguard_logs")
+            .select("srcaddr, region, attack_type, action,confidence, created_at")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return response.data
     except Exception as e:
+        print("DB ERROR:", e)
         return []
 
+# =====================
+# VERIFY DB CONNECTION
+# =====================
+@app.get("/test-db")
+def test_db():
+    data = get_recent_logs(limit=1)
+    return {"rows": data}
+
+# =====================
+# CHATBOT
+# =====================
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     user_msg = req.message.lower()
-    
-    # 1. Fetch data
-    logs = get_recent_logs(limit=10) # Get top 10 for analysis
+    logs = get_recent_logs()
 
     if not logs:
-        return ChatResponse(answer="❌ Error: Cannot reach the database.")
+        return ChatResponse(answer="❌ Unable to fetch data from Supabase.")
 
-    # 2. LOGIC: Answer specific questions
-
-    # CASE A: "What is the LAST attack?"
+    # =====================
+    # LAST ATTACK LOGIC
+    # =====================
     if "last" in user_msg and "attack" in user_msg:
-        latest = logs[0]
-        # Aesthetic Card Format
-        reply = (
-            f"🚨 **LATEST THREAT DETECTED**\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"🛑 Type: **{latest['attack_type']}**\n"
-            f"🌍 Location: {latest['geo_location']}\n"
-            f"📡 Source IP: {latest['source_ip']}\n"
-            f"🛡️ Action Taken: **{latest['action_taken']}**"
-        )
-        return ChatResponse(answer=reply)
+        for log in logs:
+            if log["attack_type"] != "Benign":
+                reply = (
+                    f"🚨 **LATEST ATTACK DETECTED**\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"🛑 Attack Type: **{log['attack_type']}**\n"
+                    f"📡 Source IP: `{log['srcaddr']}`\n"
+                    f"🌍 Region: {log['region']}\n"
+                    f"🛡️ Action: **{log['action']}**\n"
+                    f"🕒 Time: {log['created_at']}"
+                )
+                return ChatResponse(answer=reply)
 
-    # CASE B: "Show me the logs" (Default)
-    else:
-        reply = "📊 **Recent Network Activity**\n\n"
-        for log in logs[:4]: # Show top 4
-            # Choose icon based on action
-            icon = "🔴" if log['action_taken'] == 'BLOCKED' else "🟢"
-            
-            reply += (
-                f"{icon} **{log['attack_type']}**\n"
-                f"   └ 📡 {log['source_ip']} ({log['geo_location']})\n"
-                f"   └ 🛡️ Status: {log['action_taken']}\n\n"
-            )
-        reply += "💬 *Try asking: 'What was the last attack?'*"
-        return ChatResponse(answer=reply)
+        return ChatResponse(
+            answer="✅ No attacks found. All recent traffic is benign."
+        )
+
+    # =====================
+    # RECENT ACTIVITY
+    # =====================
+    reply = "📊 **Recent Network Activity**\n\n"
+
+    for log in logs[:5]:
+        is_attack = log["attack_type"] != "Benign"
+        icon = "🔴" if is_attack else "🟢"
+        label = "ATTACK" if is_attack else "BENIGN"
+
+        reply += (
+            f"{icon} **{label}** — {log['attack_type']}\n"
+            f"   └ 📡 {log['srcaddr']} ({log['region']})\n"
+            f"   └ 🛡️ {log['action']}\n\n"
+        )
+
+    reply += "💬 *Try asking:* `What was the last attack?`"
+    return ChatResponse(answer=reply)
