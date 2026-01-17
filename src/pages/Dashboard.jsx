@@ -1,83 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell,
 } from 'recharts';
 import {
-  Calendar, ChevronDown, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowRight, TrendingUp, Cpu, MessageSquare, Send, X,
+  Calendar, ChevronDown, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowRight, TrendingUp, Cpu, MessageSquare, Send, X, Clock,
 } from 'lucide-react';
 
-// --- Mock Data ---
-
-const mockStats = [
-  {
-    title: "Total Attacks",
-    value: "10.4K",
-    subtext: "All Systems Operational",
-    change: 12.5,
-    icon: TrendingUp,
-    color: "text-red-500",
-    fill: "fill-red-500",
-    chartData: [2, 5, 4, 6, 8, 5, 7],
-    chartColor: "#ef4444",
-  },
-  {
-    title: "Active Threats",
-    value: "82%",
-    subtext: "10% Data Un-tested",
-    change: -5.0,
-    icon: AlertTriangle,
-    color: "text-yellow-500",
-    fill: "fill-yellow-500",
-    chartData: [8, 6, 7, 5, 9, 7, 4],
-    chartColor: "#f59e0b",
-  },
-  {
-    title: "Active Alerts",
-    value: "41%",
-    subtext: "17% Data Un-tested",
-    change: 8.0,
-    icon: AlertTriangle,
-    color: "text-blue-400",
-    fill: "fill-blue-400",
-    chartData: [5, 7, 6, 8, 4, 7, 9],
-    chartColor: "#60a5fa",
-  },
-  {
-    title: "Uptime %",
-    value: "68%",
-    subtext: "10% Improvement",
-    change: 10.0,
-    icon: Cpu,
-    color: "text-green-500",
-    fill: "fill-green-500",
-    chartData: [4, 7, 8, 6, 9, 8, 7],
-    chartColor: "#10b981",
-  },
-];
-
-const mockTimelineData = [
-  { time: '00:00', HIGH_SEVERITY: 5, MEDIUM_SEVERITY: 10, LOW_SEVERITY: 15 },
-  { time: '02:00', HIGH_SEVERITY: 10, MEDIUM_SEVERITY: 8, LOW_SEVERITY: 12 },
-  { time: '04:00', HIGH_SEVERITY: 15, MEDIUM_SEVERITY: 12, LOW_SEVERITY: 8 },
-  { time: '06:00', HIGH_SEVERITY: 20, MEDIUM_SEVERITY: 15, LOW_SEVERITY: 10 },
-  { time: '08:00', HIGH_SEVERITY: 18, MEDIUM_SEVERITY: 14, LOW_SEVERITY: 9 },
-  { time: '10:00', HIGH_SEVERITY: 25, MEDIUM_SEVERITY: 20, LOW_SEVERITY: 15 },
-  { time: '12:00', HIGH_SEVERITY: 30, MEDIUM_SEVERITY: 22, LOW_SEVERITY: 18 },
-  { time: '14:00', HIGH_SEVERITY: 28, MEDIUM_SEVERITY: 20, LOW_SEVERITY: 16 },
-  { time: '16:00', HIGH_SEVERITY: 22, MEDIUM_SEVERITY: 15, LOW_SEVERITY: 12 },
-  { time: '18:00', HIGH_SEVERITY: 15, MEDIUM_SEVERITY: 10, LOW_SEVERITY: 8 },
-  { time: '20:00', HIGH_SEVERITY: 10, MEDIUM_SEVERITY: 5, LOW_SEVERITY: 4 },
-  { time: '22:00', HIGH_SEVERITY: 5, MEDIUM_SEVERITY: 3, LOW_SEVERITY: 2 },
-  { time: '24:00', HIGH_SEVERITY: 1, MEDIUM_SEVERITY: 1, LOW_SEVERITY: 1 },
-];
-
-const mockThreatSourceData = [
-  { name: 'DDOS', threats: 40, color: '#ef4444' },
-  { name: 'SRUL FORCE', threats: 35, color: '#f59e0b' },
-  { name: '101.0.9.41', threats: 30, color: '#60a5fa' },
-  { name: '1.0.0.5', threats: 28, color: '#10b981' },
-  { name: '1.2.0.0.45', threats: 25, color: '#a855f7' },
-];
+// --- API Configuration ---
+const API_BASE_URL = 'http://127.0.0.1:8000';
 
 // Mock Chat History (now with stable ids)
 const initialChatHistory = [
@@ -283,8 +213,206 @@ const Dashboard = () => {
   const [startDate, setStartDate] = useState('19-09-2025');
   const [endDate, setEndDate] = useState('26-09-2025');
   const [isChatOpen, setIsChatOpen] = useState(false);
+  
+  // State for real-time data
+  const [stats, setStats] = useState([
+    {
+      title: "Total Attacks",
+      value: "0",
+      subtext: "Loading...",
+      change: 0,
+      icon: TrendingUp,
+      color: "text-red-500",
+      fill: "fill-red-500",
+      chartData: [0, 0, 0, 0, 0, 0, 0],
+      chartColor: "#ef4444",
+    },
+    {
+      title: "Active Threats",
+      value: "0%",
+      subtext: "Loading...",
+      change: 0,
+      icon: AlertTriangle,
+      color: "text-yellow-500",
+      fill: "fill-yellow-500",
+      chartData: [0, 0, 0, 0, 0, 0, 0],
+      chartColor: "#f59e0b",
+    },
+    {
+      title: "Active Alerts",
+      value: "0%",
+      subtext: "Loading...",
+      change: 0,
+      icon: AlertTriangle,
+      color: "text-blue-400",
+      fill: "fill-blue-400",
+      chartData: [0, 0, 0, 0, 0, 0, 0],
+      chartColor: "#60a5fa",
+    },
+    {
+      title: "Uptime %",
+      value: "100%",
+      subtext: "Loading...",
+      change: 0,
+      icon: Cpu,
+      color: "text-green-500",
+      fill: "fill-green-500",
+      chartData: [100, 100, 100, 100, 100, 100, 100],
+      chartColor: "#10b981",
+    },
+  ]);
+  
+  const [timelineData, setTimelineData] = useState([]);
+  const [threatSourceData, setThreatSourceData] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [timelineRange, setTimelineRange] = useState('24h'); // Default to 24 hours
 
   const toggleChat = () => setIsChatOpen(prev => !prev);
+
+  // Timeline range options
+  const timelineRanges = [
+    { value: '6h', label: 'Last 6 Hours', hours: 6, interval: 'hour' },
+    { value: '24h', label: 'Last 24 Hours', hours: 24, interval: 'hour' },
+    { value: '7d', label: 'Last 7 Days', hours: 168, interval: 'day' },
+    { value: '30d', label: 'Last 30 Days', hours: 720, interval: 'day' },
+  ];
+
+  // Fetch dashboard data from backend
+  const fetchDashboardData = async () => {
+    try {
+      // Get selected timeline range
+      const selectedRange = timelineRanges.find(r => r.value === timelineRange) || timelineRanges[1];
+      
+      // Fetch stats and chart data in parallel
+      const [statsRes, chartDataRes, timelineRes, threatRes] = await Promise.allSettled([
+        fetch(`${API_BASE_URL}/api/dashboard/stats`),
+        fetch(`${API_BASE_URL}/api/dashboard/stats/chart-data`),
+        fetch(`${API_BASE_URL}/api/dashboard/timeline?hours=${selectedRange.hours}&interval=${selectedRange.interval}`),
+        fetch(`${API_BASE_URL}/api/dashboard/threat-sources`),
+      ]);
+
+      const statsData = statsRes.status === 'fulfilled' && statsRes.value.ok 
+        ? await statsRes.value.json() 
+        : { total_attacks: 0, active_threats: 0, active_alerts: 0, uptime: 100, total_attacks_change: 0 };
+      
+      const chartData = chartDataRes.status === 'fulfilled' && chartDataRes.value.ok
+        ? await chartDataRes.value.json()
+        : { total_attacks: [0, 0, 0, 0, 0, 0, 0], active_threats: [0, 0, 0, 0, 0, 0, 0], active_alerts: [0, 0, 0, 0, 0, 0, 0], uptime: [100, 100, 100, 100, 100, 100, 100] };
+      
+      const timelineDataRes = timelineRes.status === 'fulfilled' && timelineRes.value.ok
+        ? await timelineRes.value.json()
+        : [];
+      
+      const threatData = threatRes.status === 'fulfilled' && threatRes.value.ok
+        ? await threatRes.value.json()
+        : [];
+
+      // Update stats with real data
+      setStats([
+        {
+          title: "Total Attacks",
+          value: statsData.total_attacks >= 1000 ? `${(statsData.total_attacks / 1000).toFixed(1)}K` : statsData.total_attacks.toString(),
+          subtext: statsData.total_attacks > 0 ? "Threats Detected" : "All Systems Operational",
+          change: statsData.total_attacks_change || 0,
+          icon: TrendingUp,
+          color: "text-red-500",
+          fill: "fill-red-500",
+          chartData: chartData.total_attacks || [0, 0, 0, 0, 0, 0, 0],
+          chartColor: "#ef4444",
+        },
+        {
+          title: "Active Threats",
+          value: `${statsData.active_threats}%`,
+          subtext: statsData.active_threats > 50 ? "High Threat Level" : "Normal Activity",
+          change: statsData.active_threats_change || 0,
+          icon: AlertTriangle,
+          color: "text-yellow-500",
+          fill: "fill-yellow-500",
+          chartData: chartData.active_threats || [0, 0, 0, 0, 0, 0, 0],
+          chartColor: "#f59e0b",
+        },
+        {
+          title: "Active Alerts",
+          value: `${statsData.active_alerts}%`,
+          subtext: statsData.active_alerts > 30 ? "Multiple Alerts" : "Low Alert Level",
+          change: statsData.active_alerts_change || 0,
+          icon: AlertTriangle,
+          color: "text-blue-400",
+          fill: "fill-blue-400",
+          chartData: chartData.active_alerts || [0, 0, 0, 0, 0, 0, 0],
+          chartColor: "#60a5fa",
+        },
+        {
+          title: "Uptime %",
+          value: `${statsData.uptime}%`,
+          subtext: statsData.uptime > 90 ? "Excellent Performance" : "Needs Attention",
+          change: statsData.uptime_change || 0,
+          icon: Cpu,
+          color: "text-green-500",
+          fill: "fill-green-500",
+          chartData: chartData.uptime || [100, 100, 100, 100, 100, 100, 100],
+          chartColor: "#10b981",
+        },
+      ]);
+
+      // Always set timeline data (backend should return data even if empty)
+      if (timelineDataRes && Array.isArray(timelineDataRes) && timelineDataRes.length > 0) {
+        setTimelineData(timelineDataRes);
+        console.log('Timeline data loaded:', timelineDataRes.length, 'periods');
+      } else {
+        // Fallback: create empty timeline based on selected range
+        const selectedRange = timelineRanges.find(r => r.value === timelineRange) || timelineRanges[1];
+        let emptyTimeline = [];
+        
+        if (selectedRange.interval === 'day') {
+          const numDays = selectedRange.hours / 24;
+          emptyTimeline = Array.from({ length: numDays }, (_, i) => {
+            const date = new Date();
+            date.setDate(date.getDate() - (numDays - 1 - i));
+            return {
+              time: `${(date.getMonth() + 1).toString().padStart(2, '0')}/${date.getDate().toString().padStart(2, '0')}`,
+              HIGH_SEVERITY: 0,
+              MEDIUM_SEVERITY: 0,
+              LOW_SEVERITY: 0
+            };
+          });
+        } else {
+          const numHours = Math.min(selectedRange.hours, 24);
+          emptyTimeline = Array.from({ length: numHours }, (_, i) => {
+            const hour = new Date();
+            hour.setHours(hour.getHours() - (numHours - 1 - i));
+            return {
+              time: `${hour.getHours().toString().padStart(2, '0')}:00`,
+              HIGH_SEVERITY: 0,
+              MEDIUM_SEVERITY: 0,
+              LOW_SEVERITY: 0
+            };
+          });
+        }
+        
+        setTimelineData(emptyTimeline);
+        console.log('Using empty timeline fallback');
+      }
+      
+      setThreatSourceData(threatData.length > 0 ? threatData : []);
+      setIsLoading(false);
+    } catch (error) {
+      console.error('Error fetching dashboard data:', error);
+      // Keep existing data on error to prevent UI flicker
+      setIsLoading(false);
+    }
+  };
+
+  // Set up real-time polling (every 5 seconds)
+  useEffect(() => {
+    fetchDashboardData(); // Initial fetch
+    
+    const interval = setInterval(() => {
+      fetchDashboardData();
+    }, 5000); // Poll every 5 seconds
+
+    return () => clearInterval(interval);
+  }, [timelineRange]); // Re-fetch when timeline range changes
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 sm:p-8 font-inter">
@@ -357,7 +485,7 @@ const Dashboard = () => {
 
       {/* --- Stat Cards (Grid) --- */}
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        {mockStats.map((stat, index) => (
+        {stats.map((stat, index) => (
           <StatCard key={index} {...stat} chartData={stat.chartData.map((d, i) => ({ name: i, value: d }))} />
         ))}
       </section>
@@ -365,30 +493,65 @@ const Dashboard = () => {
       {/* --- Main Charts Section (Flex/Grid) --- */}
       <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-20">
 
-        {/* 1. Attack Timeline (24h) - Line Chart */}
+        {/* 1. Attack Timeline - Line Chart */}
         <Card className="h-[450px]">
-          <h2 className="text-xl font-bold mb-6">Attack Timeline (24h)</h2>
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-xl font-bold">Attack Timeline</h2>
+            <div className="relative">
+              <select
+                value={timelineRange}
+                onChange={(e) => setTimelineRange(e.target.value)}
+                className="appearance-none bg-gray-800/70 border border-gray-700 rounded-lg px-4 py-2 pr-8 text-white text-sm cursor-pointer hover:bg-gray-800 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {timelineRanges.map((range) => (
+                  <option key={range.value} value={range.value} className="bg-gray-800">
+                    {range.label}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+            </div>
+          </div>
           <div className="flex justify-center space-x-4 text-xs mb-4">
             <span className="flex items-center text-red-400"><div className="w-3 h-3 mr-1 rounded-full bg-red-400"></div>HIGH SEVERITY</span>
             <span className="flex items-center text-yellow-400"><div className="w-3 h-3 mr-1 rounded-full bg-yellow-400"></div>MEDIUM SEVERITY</span>
             <span className="flex items-center text-green-400"><div className="w-3 h-3 mr-1 rounded-full bg-green-400"></div>LOW SEVERITY</span>
           </div>
           <ResponsiveContainer width="100%" height="80%">
-            <LineChart
-              data={mockTimelineData}
-              margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-              <XAxis dataKey="time" stroke="#9ca3af" tick={{ fontSize: 10 }} />
-              <YAxis stroke="#9ca3af" tick={{ fontSize: 10 }} domain={[0, 45]} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '0.5rem' }}
-                labelStyle={{ color: '#ffffff' }}
-              />
-              <Line type="monotone" dataKey="HIGH_SEVERITY" stroke="#ef4444" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="MEDIUM_SEVERITY" stroke="#f59e0b" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="LOW_SEVERITY" stroke="#10b981" strokeWidth={2} dot={false} />
-            </LineChart>
+            {timelineData.length > 0 ? (
+              <LineChart
+                data={timelineData}
+                margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                <XAxis 
+                  dataKey="time" 
+                  stroke="#9ca3af" 
+                  tick={{ fontSize: 10 }} 
+                  interval={timelineRange === '7d' || timelineRange === '30d' ? 'preserveStartEnd' : 2}
+                  angle={timelineRange === '7d' || timelineRange === '30d' ? -45 : 0}
+                  textAnchor={timelineRange === '7d' || timelineRange === '30d' ? 'end' : 'middle'}
+                  height={timelineRange === '7d' || timelineRange === '30d' ? 60 : 30}
+                />
+                <YAxis stroke="#9ca3af" tick={{ fontSize: 10 }} domain={[0, 'auto']} />
+                <Tooltip
+                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '0.5rem' }}
+                  labelStyle={{ color: '#ffffff' }}
+                />
+                <Line type="monotone" dataKey="HIGH_SEVERITY" stroke="#ef4444" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="MEDIUM_SEVERITY" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="LOW_SEVERITY" stroke="#10b981" strokeWidth={2} dot={false} />
+              </LineChart>
+            ) : (
+              <div className="flex items-center justify-center h-full text-gray-500">
+                {isLoading ? 'Loading timeline data...' : (
+                  <div className="text-center">
+                    <div>No timeline data available</div>
+                    <div className="text-xs mt-2 text-gray-500">Check backend connection and database</div>
+                  </div>
+                )}
+              </div>
+            )}
           </ResponsiveContainer>
         </Card>
 
@@ -396,26 +559,30 @@ const Dashboard = () => {
         <Card className="h-[450px]">
           <h2 className="text-xl font-bold mb-6">Top Threat Sources</h2>
           <ResponsiveContainer width="100%" height="90%">
-            <BarChart
-              data={mockThreatSourceData}
-              margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
-              layout="vertical"
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-              <XAxis type="number" stroke="#9ca3af" tick={{ fontSize: 10 }} domain={[0, 45]} />
-              <YAxis type="category" dataKey="name" stroke="#9ca3af" tick={{ fontSize: 10 }} />
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '0.5rem' }}
-                labelStyle={{ color: '#ffffff' }}
-              />
-              <Bar dataKey="threats" fill="#3b82f6" radius={[4, 4, 0, 0]} label={{ position: 'right', fill: '#9ca3af', fontSize: 10 }}>
-                {
-                    mockThreatSourceData.map((entry, index) => (
-                        <Bar key={`bar-${index}`} fill={entry.color} />
-                    ))
-                }
-              </Bar>
-            </BarChart>
+            {threatSourceData.length > 0 ? (
+              <BarChart
+                data={threatSourceData}
+                margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                layout="vertical"
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
+                <XAxis type="number" stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                <YAxis type="category" dataKey="name" stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '0.5rem' }}
+                  labelStyle={{ color: '#ffffff' }}
+                />
+                <Bar dataKey="threats" radius={[4, 4, 0, 0]} label={{ position: 'right', fill: '#9ca3af', fontSize: 10 }}>
+                  {threatSourceData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Bar>
+              </BarChart>
+            ) : (
+              <div className="flex items-center justify-center h-full text-gray-500">
+                {isLoading ? 'Loading threat sources...' : 'No threat sources detected'}
+              </div>
+            )}
           </ResponsiveContainer>
         </Card>
       </section>
