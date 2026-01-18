@@ -48,7 +48,7 @@ def get_recent_logs(limit=100):
         response = (
             supabase
             .table("cloudguard_logs")
-            .select("srcaddr, region, attack_type, action, confidence, created_at")
+            .select("id, srcaddr, region, attack_type, action, confidence, created_at, predicted_label")
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
@@ -71,7 +71,7 @@ def get_logs_by_time_range(hours=24):
         response = (
             supabase
             .table("cloudguard_logs")
-            .select("srcaddr, region, attack_type, action, confidence, created_at")
+            .select("id, srcaddr, region, attack_type, action, confidence, created_at, predicted_label")
             .gte("created_at", cutoff_time_str)
             .order("created_at", desc=False)
             .execute()
@@ -91,7 +91,7 @@ def get_all_logs(limit=1000):
         response = (
             supabase
             .table("cloudguard_logs")
-            .select("srcaddr, region, attack_type, action, confidence, created_at")
+            .select("id, srcaddr, region, attack_type, action, confidence, created_at, predicted_label")
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
@@ -166,71 +166,77 @@ async def chat(req: ChatRequest):
 
 @app.get("/api/dashboard/stats")
 async def get_dashboard_stats():
-    """Get dashboard statistics: total attacks, active threats, alerts, uptime"""
+    """Get dashboard statistics: total logs, total attacks, attack percentage, most common attack type"""
     try:
         logs = get_recent_logs(limit=1000)
         
         if not logs:
             return {
+                "total_logs": 0,
                 "total_attacks": 0,
-                "active_threats": 0,
-                "active_alerts": 0,
-                "uptime": 100,
-                "total_attacks_change": 0,
-                "active_threats_change": 0,
-                "active_alerts_change": 0,
-                "uptime_change": 0
+                "attack_percentage": 0,
+                "most_common_attack_type": "None",
+                "total_attacks_change": 0
             }
+        
+        # Helper function to check if log is an attack (predicted_label != 0)
+        def is_attack(log):
+            predicted_label = log.get("predicted_label")
+            # Handle both int and string types
+            if predicted_label is None:
+                return False
+            try:
+                return int(predicted_label) != 0
+            except (ValueError, TypeError):
+                return False
         
         # Calculate stats
         total_logs = len(logs)
-        attacks = [log for log in logs if log.get("attack_type", "").lower() != "benign"]
+        attacks = [log for log in logs if is_attack(log)]
         total_attacks = len(attacks)
         
-        # Active threats (percentage of attacks in last 24h)
-        recent_logs_24h = get_logs_by_time_range(24)
-        recent_attacks = [log for log in recent_logs_24h if log.get("attack_type", "").lower() != "benign"]
-        active_threats_pct = (len(recent_attacks) / len(recent_logs_24h) * 100) if recent_logs_24h else 0
+        # Attack percentage: (COUNT WHERE predicted_label != 0 / COUNT(*)) * 100
+        attack_percentage = (total_attacks / total_logs * 100) if total_logs > 0 else 0
         
-        # Active alerts (high confidence attacks)
-        high_confidence_attacks = [log for log in attacks if log.get("confidence", 0) > 0.7]
-        active_alerts_pct = (len(high_confidence_attacks) / total_logs * 100) if total_logs else 0
+        # Most common attack type: most frequent attack_type where predicted_label != 0
+        attack_type_counts = defaultdict(int)
+        for log in attacks:
+            attack_type = log.get("attack_type", "Unknown")
+            if attack_type:
+                attack_type_counts[attack_type] += 1
         
-        # Uptime (percentage of benign traffic)
-        benign_count = total_logs - total_attacks
-        uptime_pct = (benign_count / total_logs * 100) if total_logs else 100
+        if attack_type_counts:
+            most_common_attack_type = max(attack_type_counts.items(), key=lambda x: x[1])[0]
+        else:
+            most_common_attack_type = "None"
         
         # Calculate changes (simplified - compare first half vs second half of logs)
         mid_point = len(logs) // 2
         first_half = logs[:mid_point] if mid_point > 0 else []
         second_half = logs[mid_point:] if mid_point > 0 else logs
         
-        first_half_attacks = len([log for log in first_half if log.get("attack_type", "").lower() != "benign"])
-        second_half_attacks = len([log for log in second_half if log.get("attack_type", "").lower() != "benign"])
+        first_half_attacks = len([log for log in first_half if is_attack(log)])
+        second_half_attacks = len([log for log in second_half if is_attack(log)])
         
         total_attacks_change = ((second_half_attacks - first_half_attacks) / first_half_attacks * 100) if first_half_attacks > 0 else 0
         
         return {
+            "total_logs": total_logs,
             "total_attacks": total_attacks,
-            "active_threats": round(active_threats_pct, 1),
-            "active_alerts": round(active_alerts_pct, 1),
-            "uptime": round(uptime_pct, 1),
-            "total_attacks_change": round(total_attacks_change, 1),
-            "active_threats_change": 0,  # Can be calculated similarly
-            "active_alerts_change": 0,    # Can be calculated similarly
-            "uptime_change": 0           # Can be calculated similarly
+            "attack_percentage": round(attack_percentage, 2),
+            "most_common_attack_type": most_common_attack_type,
+            "total_attacks_change": round(total_attacks_change, 1)
         }
     except Exception as e:
         print(f"Error getting dashboard stats: {e}")
+        import traceback
+        traceback.print_exc()
         return {
+            "total_logs": 0,
             "total_attacks": 0,
-            "active_threats": 0,
-            "active_alerts": 0,
-            "uptime": 100,
-            "total_attacks_change": 0,
-            "active_threats_change": 0,
-            "active_alerts_change": 0,
-            "uptime_change": 0
+            "attack_percentage": 0,
+            "most_common_attack_type": "None",
+            "total_attacks_change": 0
         }
 
 @app.get("/api/dashboard/timeline")

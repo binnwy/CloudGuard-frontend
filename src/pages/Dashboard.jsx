@@ -3,7 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell,
 } from 'recharts';
 import {
-  Calendar, ChevronDown, Download, AlertTriangle, ArrowUp, ArrowDown, ArrowRight, TrendingUp, Cpu, MessageSquare, Send, X, Clock,
+  Calendar, ChevronDown, Download, AlertTriangle, ArrowRight, TrendingUp, Cpu, MessageSquare, Send, X, Clock, Database, Percent, Shield,
 } from 'lucide-react';
 
 // --- API Configuration ---
@@ -25,10 +25,6 @@ const Card = ({ children, className = '' }) => (
 );
 
 const StatCard = ({ title, value, subtext, change, icon: Icon, chartData, chartColor }) => {
-  const isPositive = change > 0;
-  const ChangeIcon = isPositive ? ArrowUp : ArrowDown;
-  const changeColor = isPositive ? 'text-green-400' : 'text-red-400';
-
   return (
     <Card className="flex flex-col justify-between h-full hover:border-blue-500 transition-all duration-300">
       <div className="flex justify-between items-start mb-4">
@@ -56,12 +52,8 @@ const StatCard = ({ title, value, subtext, change, icon: Icon, chartData, chartC
         </div>
       </div>
 
-      <div className="flex items-center text-sm">
-        <span className={`flex items-center font-bold mr-2 ${changeColor}`}>
-          <ChangeIcon className="w-4 h-4 mr-1" />
-          {Math.abs(change)}%
-        </span>
-        <span className="text-gray-400">{subtext}</span>
+      <div className="text-sm text-gray-400">
+        {subtext}
       </div>
     </Card>
   );
@@ -214,10 +206,21 @@ const Dashboard = () => {
   const [endDate, setEndDate] = useState('26-09-2025');
   const [isChatOpen, setIsChatOpen] = useState(false);
   
-  // State for real-time data
+  // State for real-time data - 4 KPIs: Total Logs, Total Attacks Detected, Attack % of Traffic, Most Common Attack Type
   const [stats, setStats] = useState([
     {
-      title: "Total Attacks",
+      title: "Total Logs",
+      value: "0",
+      subtext: "Loading...",
+      change: 0,
+      icon: Database,
+      color: "text-blue-400",
+      fill: "fill-blue-400",
+      chartData: [0, 0, 0, 0, 0, 0, 0],
+      chartColor: "#60a5fa",
+    },
+    {
+      title: "Total Attacks Detected",
       value: "0",
       subtext: "Loading...",
       change: 0,
@@ -228,36 +231,25 @@ const Dashboard = () => {
       chartColor: "#ef4444",
     },
     {
-      title: "Active Threats",
+      title: "Attack % of Traffic",
       value: "0%",
       subtext: "Loading...",
       change: 0,
-      icon: AlertTriangle,
+      icon: Percent,
       color: "text-yellow-500",
       fill: "fill-yellow-500",
       chartData: [0, 0, 0, 0, 0, 0, 0],
       chartColor: "#f59e0b",
     },
     {
-      title: "Active Alerts",
-      value: "0%",
+      title: "Most Common Attack Type",
+      value: "None",
       subtext: "Loading...",
       change: 0,
-      icon: AlertTriangle,
-      color: "text-blue-400",
-      fill: "fill-blue-400",
-      chartData: [0, 0, 0, 0, 0, 0, 0],
-      chartColor: "#60a5fa",
-    },
-    {
-      title: "Uptime %",
-      value: "100%",
-      subtext: "Loading...",
-      change: 0,
-      icon: Cpu,
+      icon: Shield,
       color: "text-green-500",
       fill: "fill-green-500",
-      chartData: [100, 100, 100, 100, 100, 100, 100],
+      chartData: [0, 0, 0, 0, 0, 0, 0],
       chartColor: "#10b981",
     },
   ]);
@@ -293,7 +285,7 @@ const Dashboard = () => {
 
       const statsData = statsRes.status === 'fulfilled' && statsRes.value.ok 
         ? await statsRes.value.json() 
-        : { total_attacks: 0, active_threats: 0, active_alerts: 0, uptime: 100, total_attacks_change: 0 };
+        : { total_logs: 0, total_attacks: 0, attack_percentage: 0, most_common_attack_type: "None", total_attacks_change: 0 };
       
       const chartData = chartDataRes.status === 'fulfilled' && chartDataRes.value.ok
         ? await chartDataRes.value.json()
@@ -307,12 +299,23 @@ const Dashboard = () => {
         ? await threatRes.value.json()
         : [];
 
-      // Update stats with real data
+      // Update stats with real data - 4 KPIs in order: Total Logs, Total Attacks Detected, Attack % of Traffic, Most Common Attack Type
       setStats([
         {
-          title: "Total Attacks",
-          value: statsData.total_attacks >= 1000 ? `${(statsData.total_attacks / 1000).toFixed(1)}K` : statsData.total_attacks.toString(),
-          subtext: statsData.total_attacks > 0 ? "Threats Detected" : "All Systems Operational",
+          title: "Total Logs",
+          value: statsData.total_logs >= 1000 ? `${(statsData.total_logs / 1000).toFixed(1)}K` : (statsData.total_logs || 0).toString(),
+          subtext: "Derived from ingested traffic logs",
+          change: 0,
+          icon: Database,
+          color: "text-blue-400",
+          fill: "fill-blue-400",
+          chartData: [0, 0, 0, 0, 0, 0, 0], // Chart data not needed for this KPI
+          chartColor: "#60a5fa",
+        },
+        {
+          title: "Total Attacks Detected",
+          value: statsData.total_attacks >= 1000 ? `${(statsData.total_attacks / 1000).toFixed(1)}K` : (statsData.total_attacks || 0).toString(),
+          subtext: "Derived from non-zero predicted labels",
           change: statsData.total_attacks_change || 0,
           icon: TrendingUp,
           color: "text-red-500",
@@ -321,36 +324,29 @@ const Dashboard = () => {
           chartColor: "#ef4444",
         },
         {
-          title: "Active Threats",
-          value: `${statsData.active_threats}%`,
-          subtext: statsData.active_threats > 50 ? "High Threat Level" : "Normal Activity",
-          change: statsData.active_threats_change || 0,
-          icon: AlertTriangle,
+          title: "Attack % of Traffic",
+          value: `${(statsData.attack_percentage || 0).toFixed(2)}%`,
+          subtext: "Derived from ML classification results",
+          change: 0,
+          icon: Percent,
           color: "text-yellow-500",
           fill: "fill-yellow-500",
-          chartData: chartData.active_threats || [0, 0, 0, 0, 0, 0, 0],
+          chartData: [0, 0, 0, 0, 0, 0, 0], // Chart data not needed for this KPI
           chartColor: "#f59e0b",
         },
         {
-          title: "Active Alerts",
-          value: `${statsData.active_alerts}%`,
-          subtext: statsData.active_alerts > 30 ? "Multiple Alerts" : "Low Alert Level",
-          change: statsData.active_alerts_change || 0,
-          icon: AlertTriangle,
-          color: "text-blue-400",
-          fill: "fill-blue-400",
-          chartData: chartData.active_alerts || [0, 0, 0, 0, 0, 0, 0],
-          chartColor: "#60a5fa",
-        },
-        {
-          title: "Uptime %",
-          value: `${statsData.uptime}%`,
-          subtext: statsData.uptime > 90 ? "Excellent Performance" : "Needs Attention",
-          change: statsData.uptime_change || 0,
-          icon: Cpu,
+          title: "Most Common Attack Type",
+          value: statsData.most_common_attack_type && statsData.most_common_attack_type !== "None" 
+            ? statsData.most_common_attack_type.length > 12 
+              ? statsData.most_common_attack_type.substring(0, 12) + "..."
+              : statsData.most_common_attack_type
+            : "None",
+          subtext: "Derived from attack type frequency analysis",
+          change: 0,
+          icon: Shield,
           color: "text-green-500",
           fill: "fill-green-500",
-          chartData: chartData.uptime || [100, 100, 100, 100, 100, 100, 100],
+          chartData: [0, 0, 0, 0, 0, 0, 0], // Chart data not needed for this KPI
           chartColor: "#10b981",
         },
       ]);
@@ -557,7 +553,7 @@ const Dashboard = () => {
 
         {/* 2. Top Threat Sources - Bar Chart */}
         <Card className="h-[450px]">
-          <h2 className="text-xl font-bold mb-6">Top Threat Sources</h2>
+          <h2 className="text-xl font-bold mb-6">Top Malicious Source IPs</h2>
           <ResponsiveContainer width="100%" height="90%">
             {threatSourceData.length > 0 ? (
               <BarChart
