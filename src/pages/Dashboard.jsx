@@ -259,7 +259,57 @@ const Dashboard = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [timelineRange, setTimelineRange] = useState('24h'); // Default to 24 hours
 
+  // Date range selector state
+  const [selectedRange, setSelectedRange] = useState('today');
+  const [showCustomModal, setShowCustomModal] = useState(false);
+  const [customFromDate, setCustomFromDate] = useState('');
+  const [customToDate, setCustomToDate] = useState('');
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+
   const toggleChat = () => setIsChatOpen(prev => !prev);
+
+  // Date range options
+  const dateRangeOptions = [
+    { value: 'today', label: 'Today' },
+    { value: 'yesterday', label: 'Yesterday' },
+    { value: 'last7days', label: 'Last 7 Days' },
+    { value: 'last30days', label: 'Last 30 Days' },
+    { value: 'custom', label: 'Custom Range...' },
+  ];
+
+  // Get label for currently selected range
+  const getSelectedRangeLabel = () => {
+    if (selectedRange === 'custom') return 'Custom Range';
+    const option = dateRangeOptions.find(opt => opt.value === selectedRange);
+    return option ? option.label : 'Today';
+  };
+
+  // Handle custom range apply
+  const handleCustomRangeApply = () => {
+    if (customFromDate && customToDate) {
+      setSelectedRange('custom');
+      setShowCustomModal(false);
+      setDropdownOpen(false);
+    }
+  };
+
+  // Handle custom range cancel
+  const handleCustomRangeCancel = () => {
+    setShowCustomModal(false);
+    setCustomFromDate('');
+    setCustomToDate('');
+  };
+
+  // Handle range selection from dropdown
+  const handleRangeSelect = (rangeValue) => {
+    if (rangeValue === 'custom') {
+      setShowCustomModal(true);
+      setDropdownOpen(false);
+    } else {
+      setSelectedRange(rangeValue);
+      setDropdownOpen(false);
+    }
+  };
 
   // Timeline range options
   const timelineRanges = [
@@ -269,18 +319,127 @@ const Dashboard = () => {
     { value: '30d', label: 'Last 30 Days', hours: 720, interval: 'day' },
   ];
 
+  // Helper function to convert hours to ISO 8601 date range
+  const getDateRangeFromHours = (hours) => {
+    const toDate = new Date();
+    const fromDate = new Date(toDate.getTime() - hours * 60 * 60 * 1000);
+    
+    // Format as ISO 8601 UTC
+    const from = fromDate.toISOString();
+    const to = toDate.toISOString();
+    
+    return { from_date: from, to_date: to };
+  };
+
+  // Compute from_date and to_date based on selected range
+  /**
+   * ROOT CAUSE FIX: Timezone Correction
+   * 
+   * CRITICAL BUG FIXED: The original implementation used local browser timezone 
+   * to create dates, but Supabase stores all created_at timestamps in UTC.
+   * This mismatch caused date range queries to miss all data.
+   * 
+   * Example of the bug:
+   * - Browser local time: Jan 18 18:30:00 (EST, UTC-5)
+   * - Converted to UTC by JS: Jan 19 23:30:00 (shifted forward!)
+   * - Database data: Jan 15 14:55:57 UTC
+   * - Query: "from Jan 19 23:30:00 UTC to now UTC"
+   * - Result: 0 rows (date range is AFTER all data!)
+   * 
+   * FIX: Use Date.UTC() and getUTC*() methods exclusively to ensure all
+   * dates are computed in UTC timezone, matching Supabase created_at field.
+   */
+  const computeDateRange = (range, customFromDate, customToDate) => {
+    let fromDate, toDate;
+
+    switch (range) {
+      case 'today': {
+        // Today in UTC: midnight UTC to now UTC
+        const now = new Date();
+        fromDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+        toDate = now;
+        break;
+      }
+      case 'yesterday': {
+        // Yesterday in UTC: midnight UTC to 23:59:59 UTC
+        const now = new Date();
+        const yesterday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0));
+        fromDate = yesterday;
+        toDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 23, 59, 59, 999));
+        break;
+      }
+      case 'last7days': {
+        // Now - 7 days UTC to now UTC
+        const now = new Date();
+        fromDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        toDate = now;
+        break;
+      }
+      case 'last30days': {
+        // Now - 30 days UTC to now UTC
+        const now = new Date();
+        fromDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        toDate = now;
+        break;
+      }
+      case 'custom': {
+        // Custom dates: parse as UTC, from at 00:00:00 to at 23:59:59 UTC
+        if (customFromDate && customToDate) {
+          // Parse date string (YYYY-MM-DD) as UTC
+          const [fromYear, fromMonth, fromDay] = customFromDate.split('-').map(Number);
+          const [toYear, toMonth, toDay] = customToDate.split('-').map(Number);
+          
+          fromDate = new Date(Date.UTC(fromYear, fromMonth - 1, fromDay, 0, 0, 0, 0));
+          toDate = new Date(Date.UTC(toYear, toMonth - 1, toDay, 23, 59, 59, 999));
+        } else {
+          // Fallback to today UTC if custom dates not set
+          const now = new Date();
+          fromDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+          toDate = now;
+        }
+        break;
+      }
+      default: {
+        // Default to today UTC
+        const now = new Date();
+        fromDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+        toDate = now;
+      }
+    }
+
+    return {
+      fromDateISO: fromDate.toISOString(),
+      toDateISO: toDate.toISOString(),
+    };
+  };
+
+  // Compute and store date range from selected range
+  const [computedDateRange, setComputedDateRange] = useState(() =>
+    computeDateRange('today', '', '')
+  );
+
+  // Update computed date range whenever selection or custom dates change
+  useEffect(() => {
+    const newRange = computeDateRange(selectedRange, customFromDate, customToDate);
+    setComputedDateRange(newRange);
+  }, [selectedRange, customFromDate, customToDate]);
+
   // Fetch dashboard data from backend
   const fetchDashboardData = async () => {
     try {
-      // Get selected timeline range
+      // Get dates from computed range (defaults to today if missing)
+      const fromDate = computedDateRange?.fromDateISO || computeDateRange('today', '', '').fromDateISO;
+      const toDate = computedDateRange?.toDateISO || computeDateRange('today', '', '').toDateISO;
+      
+      // Get selected timeline range for interval parameter only
       const selectedRange = timelineRanges.find(r => r.value === timelineRange) || timelineRanges[1];
       
       // Fetch stats and chart data in parallel
       const [statsRes, chartDataRes, timelineRes, threatRes] = await Promise.allSettled([
-        fetch(`${API_BASE_URL}/api/dashboard/stats`),
-        fetch(`${API_BASE_URL}/api/dashboard/stats/chart-data`),
-        fetch(`${API_BASE_URL}/api/dashboard/timeline?hours=${selectedRange.hours}&interval=${selectedRange.interval}`),
-        fetch(`${API_BASE_URL}/api/dashboard/threat-sources`),
+        fetch(`${API_BASE_URL}/api/dashboard/stats?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
+        fetch(`${API_BASE_URL}/api/dashboard/stats/chart-data?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
+        fetch(`${API_BASE_URL}/api/dashboard/timeline?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}&interval=${selectedRange.interval}`),
+        fetch(`${API_BASE_URL}/api/dashboard/threat-sources?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
       ]);
 
       const statsData = statsRes.status === 'fulfilled' && statsRes.value.ok 
@@ -408,7 +567,7 @@ const Dashboard = () => {
     }, 5000); // Poll every 5 seconds
 
     return () => clearInterval(interval);
-  }, [timelineRange]); // Re-fetch when timeline range changes
+  }, [computedDateRange, timelineRange]); // Re-fetch when date range or timeline range changes
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 sm:p-8 font-inter">
@@ -460,15 +619,33 @@ const Dashboard = () => {
         <h1 className="text-3xl font-bold text-white mb-4 md:mb-0">CloudGuard Dashboard</h1>
         <div className="flex flex-wrap items-center space-x-2 sm:space-x-4">
           
-          {/* Date Picker Group */}
-          <div className="flex items-center bg-gray-800/70 p-2 rounded-xl text-sm border border-gray-700">
-            <Calendar className="w-4 h-4 mr-2 text-gray-400" />
-            <span className="mr-1 text-gray-300">FROM</span>
-            <span className="font-semibold text-white">{startDate}</span>
-            <ArrowRight className="w-3 h-3 mx-2 text-gray-400" />
-            <span className="mr-1 text-gray-300">TO</span>
-            <span className="font-semibold text-white">{endDate}</span>
-            <ChevronDown className="w-4 h-4 ml-2 text-gray-400 cursor-pointer" />
+          {/* Date Range Selector Dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setDropdownOpen(!dropdownOpen)}
+              className="flex items-center bg-gray-800/70 hover:bg-gray-800 p-3 rounded-xl text-sm border border-gray-700 text-white transition-colors duration-200"
+            >
+              <Calendar className="w-4 h-4 mr-2 text-gray-400" />
+              <span className="font-semibold">{getSelectedRangeLabel()}</span>
+              <ChevronDown className="w-4 h-4 ml-2 text-gray-400" />
+            </button>
+
+            {/* Dropdown Menu */}
+            {dropdownOpen && (
+              <div className="absolute top-full mt-2 right-0 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-40 min-w-48">
+                {dateRangeOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    onClick={() => handleRangeSelect(option.value)}
+                    className={`w-full text-left px-4 py-3 hover:bg-gray-700 transition-colors ${
+                      selectedRange === option.value ? 'bg-blue-600/30 text-blue-300' : 'text-gray-300'
+                    } ${option.value === 'custom' && 'border-t border-gray-600'}`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Generate PDF Button */}
@@ -478,6 +655,56 @@ const Dashboard = () => {
           </button>
         </div>
       </header>
+
+      {/* Custom Date Range Modal */}
+      {showCustomModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-800 rounded-lg p-8 max-w-md w-full border border-gray-700 shadow-2xl">
+            <h2 className="text-2xl font-bold text-white mb-6">Custom Date Range</h2>
+            
+            <div className="space-y-4">
+              {/* From Date Input */}
+              <div>
+                <label className="block text-gray-300 text-sm font-semibold mb-2">From Date</label>
+                <input
+                  type="date"
+                  value={customFromDate}
+                  onChange={(e) => setCustomFromDate(e.target.value)}
+                  className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+
+              {/* To Date Input */}
+              <div>
+                <label className="block text-gray-300 text-sm font-semibold mb-2">To Date</label>
+                <input
+                  type="date"
+                  value={customToDate}
+                  onChange={(e) => setCustomToDate(e.target.value)}
+                  className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            {/* Modal Buttons */}
+            <div className="flex gap-3 mt-8">
+              <button
+                onClick={handleCustomRangeApply}
+                disabled={!customFromDate || !customToDate}
+                className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold rounded-lg transition-colors"
+              >
+                Apply
+              </button>
+              <button
+                onClick={handleCustomRangeCancel}
+                className="flex-1 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* --- Stat Cards (Grid) --- */}
       <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -542,8 +769,8 @@ const Dashboard = () => {
               <div className="flex items-center justify-center h-full text-gray-500">
                 {isLoading ? 'Loading timeline data...' : (
                   <div className="text-center">
-                    <div>No timeline data available</div>
-                    <div className="text-xs mt-2 text-gray-500">Check backend connection and database</div>
+                    <div className="text-gray-400">No data for selected range</div>
+                    <div className="text-xs mt-2 text-gray-600">Try expanding your date range</div>
                   </div>
                 )}
               </div>
@@ -575,8 +802,15 @@ const Dashboard = () => {
                 </Bar>
               </BarChart>
             ) : (
-              <div className="flex items-center justify-center h-full text-gray-500">
-                {isLoading ? 'Loading threat sources...' : 'No threat sources detected'}
+              <div className="flex items-center justify-center h-full">
+                {isLoading ? (
+                  <span className="text-gray-500">Loading threat sources...</span>
+                ) : (
+                  <div className="text-center">
+                    <div className="text-gray-400">No threat sources detected</div>
+                    <div className="text-xs mt-2 text-gray-600">No attacks found in selected range</div>
+                  </div>
+                )}
               </div>
             )}
           </ResponsiveContainer>
