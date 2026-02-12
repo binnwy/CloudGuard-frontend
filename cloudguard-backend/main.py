@@ -11,6 +11,7 @@ from fastapi import APIRouter, Response
 import csv
 import io
 import re
+import google.generativeai as genai
 # =====================
 # LOAD ENV
 # =====================
@@ -20,6 +21,17 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# =====================
+# GEMINI LLM SETUP
+# =====================
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel("models/gemini-flash-latest")
+
+else:
+    model = None
 
 # =====================
 # FASTAPI APP
@@ -247,6 +259,40 @@ def detect_date_range(message: str) -> tuple:
             label)
 
 # =====================
+# LLM HELPER
+# =====================
+def call_llm_gemini(message: str) -> str:
+    """Call Google Gemini LLM for general cybersecurity questions.
+    Only used for unknown intents. Does not generate statistics.
+    """
+    if not model:
+        return "The AI assistant is temporarily unavailable. Please try again shortly."
+    
+    try:
+        system_prompt = (
+            """You are a cybersecurity SOC assistant.
+
+            Provide concise, professional explanations suitable for a security dashboard.
+            Limit responses to 3-4 sentences.
+            Do not use markdown headings, numbered lists, or bullet lists.
+            Use bold formatting only for important technical terms.
+            Do not mention that you are an AI model.
+            Do not generate statistics or system metrics."""
+        )
+        response = model.generate_content(
+            f"{system_prompt}\n\nUser question: {message}",
+            generation_config={
+            "temperature": 0.4}
+)
+
+        if response and response.text:
+            return response.text
+        return "The AI assistant could not generate a response. Please try again."
+    except Exception as e:
+        print(f"[ERROR] LLM call failed: {e}")
+        return "The AI assistant is temporarily unavailable. Please try again shortly."
+
+# =====================
 # CHATBOT
 # =====================
 @app.post("/api/chat", response_model=ChatResponse)
@@ -329,8 +375,9 @@ async def chat(req: ChatRequest):
                 return ChatResponse(answer=f"{total_attacks} security attacks were detected during the selected time period.")
         
         else:
-            # Unknown intent
-            return ChatResponse(answer="I can answer questions about logs and attacks.")
+            # Unknown intent - use LLM
+            llm_answer = call_llm_gemini(req.message)
+            return ChatResponse(answer=llm_answer)
     
     except Exception as e:
         print(f"[ERROR] chat endpoint: {e}")
@@ -341,21 +388,26 @@ router = APIRouter()
 
 @router.get("/api/dashboard/export-csv")
 def export_csv(from_date: str, to_date: str):
-    rows = get_logs_by_date_range(from_date, to_date)
+    response = (
+        supabase
+        .table("cloudguard_logs")
+        .select("*")
+        .gte("created_at", from_date)
+        .lte("created_at", to_date)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    rows = response.data or []
 
     if not rows:
         return Response(
-            content="",
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=cloudguard_logs.csv"},
+            content="No data available for the selected date range.",
+            media_type="text/plain"
         )
 
-    # Remove "action" column from each row
-    for row in rows:
-        row.pop("action", None)
-
     output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+    fieldnames = rows[0].keys()
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(rows)
 
