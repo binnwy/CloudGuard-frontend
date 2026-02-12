@@ -238,10 +238,10 @@ def detect_date_range(message: str) -> tuple:
                 to_date.strftime('%Y-%m-%dT%H:%M:%SZ'), 
                 label)
     
-    # Priority 6: Default: last 7 days
-    from_date = now - timedelta(days=7)
+    # Priority 6: Default: last 30 days
+    from_date = now - timedelta(days=30)
     to_date = now
-    label = "last 7 days"
+    label = "in the last 30 days"
     return (from_date.strftime('%Y-%m-%dT%H:%M:%SZ'), 
             to_date.strftime('%Y-%m-%dT%H:%M:%SZ'), 
             label)
@@ -256,40 +256,77 @@ async def chat(req: ChatRequest):
         from_date, to_date, date_label = detect_date_range(req.message)
         
         if intent == "last_attack":
-            # Return info about last attack within date range
-            logs = get_logs_by_date_range(from_date, to_date)
-            for log in logs:
-                if log["attack_type"] != "Benign":
-                    try:
-                        # Parse timestamp and format it
-                        timestamp_str = log["created_at"]
-                        if timestamp_str.endswith('Z'):
-                            timestamp_str = timestamp_str.replace('Z', '+00:00')
-                        attack_time = datetime.fromisoformat(timestamp_str)
-                        formatted_time = attack_time.strftime("%d-%m-%Y %H:%M:%S")
-                        attack_type = log.get("attack_type", "Unknown")
-                        return ChatResponse(answer=f"Last attack occurred on {formatted_time} from {log['srcaddr']} ({attack_type}).")
-                    except Exception:
-                        return ChatResponse(answer=f"Last attack {date_label} from {log['srcaddr']} ({log.get('attack_type', 'Attack')}).")
-            return ChatResponse(answer="No recent attacks were detected.")
+            # Return info about the most recent attack in the database (ignore date range)
+            response = (
+                supabase
+                .table("cloudguard_logs")
+                .select("id, srcaddr, region, attack_type, action, confidence, created_at, predicted_label")
+                .neq("predicted_label", 0)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            logs = response.data or []
+            if not logs:
+                return ChatResponse(answer="No attacks have been recorded in the system yet.")
+            log = logs[0]
+            # Extract fields
+            timestamp_str = log["created_at"]
+            if timestamp_str.endswith('Z'):
+                timestamp_str = timestamp_str.replace('Z', '+00:00')
+            try:
+                attack_time = datetime.fromisoformat(timestamp_str)
+                formatted_time = attack_time.strftime("%d-%m-%Y %H:%M:%S")
+            except Exception:
+                formatted_time = timestamp_str
+            attack_type = log.get("attack_type", "Unknown")
+            srcaddr = log.get("srcaddr", "Unknown")
+            return ChatResponse(
+                answer=(
+                    f"The most recent attack occurred on {formatted_time} UTC. "
+                    f"It was an {attack_type} attempt from IP address {srcaddr}."
+                )
+            )
         
         elif intent == "total_logs":
-            # Return total number of logs in date range
             total_logs = get_total_logs_count(from_date, to_date)
+            # Professional response formatting
             if total_logs == 0:
-                return ChatResponse(answer=f"No logs were recorded {date_label}.")
-            return ChatResponse(answer=f"Total logs {date_label}: {total_logs}")
-        
+                return ChatResponse(answer="No traffic logs were recorded during the selected time period.")
+            # Use label for formatting
+            if date_label == "today":
+                return ChatResponse(answer=f"A total of {total_logs} traffic logs have been recorded today.")
+            elif date_label == "yesterday":
+                return ChatResponse(answer=f"A total of {total_logs} traffic logs were recorded yesterday.")
+            elif date_label.startswith("on "):
+                return ChatResponse(answer=f"A total of {total_logs} traffic logs were recorded on {date_label[3:]}.")
+            elif date_label.startswith("from "):
+                return ChatResponse(answer=f"A total of {total_logs} traffic logs were recorded {date_label}.")
+            elif date_label == "in the last 30 days":
+                return ChatResponse(answer=f"A total of {total_logs} traffic logs were recorded in the last 30 days.")
+            else:
+                return ChatResponse(answer=f"A total of {total_logs} traffic logs were recorded during the selected time period.")
+
         elif intent == "total_attacks":
-            # Count attacks in date range
             total_logs = get_total_logs_count(from_date, to_date)
             if total_logs == 0:
-                return ChatResponse(answer=f"No logs were recorded {date_label}.")
-            
+                return ChatResponse(answer="No traffic data was recorded during the selected time period, so no attacks were detected.")
             total_attacks = get_total_attacks_count(from_date, to_date)
             if total_attacks == 0:
-                return ChatResponse(answer=f"No attacks were detected {date_label}.")
-            return ChatResponse(answer=f"Total attacks {date_label}: {total_attacks}")
+                return ChatResponse(answer="Traffic was recorded during the selected period, but no malicious activity was detected.")
+            # Use label for formatting
+            if date_label == "today":
+                return ChatResponse(answer=f"{total_attacks} security attacks have been detected today.")
+            elif date_label == "yesterday":
+                return ChatResponse(answer=f"{total_attacks} security attacks were detected yesterday.")
+            elif date_label.startswith("on "):
+                return ChatResponse(answer=f"{total_attacks} security attacks were detected on {date_label[3:]}.")
+            elif date_label.startswith("from "):
+                return ChatResponse(answer=f"{total_attacks} security attacks were detected {date_label}.")
+            elif date_label == "in the last 30 days":
+                return ChatResponse(answer=f"{total_attacks} security attacks were detected in the last 30 days.")
+            else:
+                return ChatResponse(answer=f"{total_attacks} security attacks were detected during the selected time period.")
         
         else:
             # Unknown intent
