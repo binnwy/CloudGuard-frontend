@@ -257,7 +257,6 @@ const Dashboard = () => {
   const [timelineData, setTimelineData] = useState([]);
   const [threatSourceData, setThreatSourceData] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [timelineRange, setTimelineRange] = useState('24h'); // Default to 24 hours
 
   // Date range selector state
   const [selectedRange, setSelectedRange] = useState('today');
@@ -273,7 +272,6 @@ const Dashboard = () => {
     { value: 'today', label: 'Today' },
     { value: 'yesterday', label: 'Yesterday' },
     { value: 'last7days', label: 'Last 7 Days' },
-    { value: 'last30days', label: 'Last 30 Days' },
     { value: 'custom', label: 'Custom Range...' },
   ];
 
@@ -311,6 +309,13 @@ const Dashboard = () => {
     }
   };
 
+  // Handle CSV export
+  const handleExportCSV = () => {
+    const { fromDateISO, toDateISO } = computedDateRange;
+    const url = `${API_BASE_URL}/api/dashboard/export-csv?from_date=${encodeURIComponent(fromDateISO)}&to_date=${encodeURIComponent(toDateISO)}`;
+    window.open(url, '_blank');
+  };
+
   // Timeline range options
   const timelineRanges = [
     { value: '6h', label: 'Last 6 Hours', hours: 6, interval: 'hour' },
@@ -329,6 +334,34 @@ const Dashboard = () => {
     const to = toDate.toISOString();
     
     return { from_date: from, to_date: to };
+  };
+
+  // Helper function to determine interval based on selected date range
+  // today, yesterday → use hourly aggregation
+  // last7days, last30days → use daily aggregation
+  // custom → determine based on date range size
+  const getIntervalForDateRange = (range) => {
+    switch (range) {
+      case 'today':
+      case 'yesterday':
+        return 'hour';
+      case 'last7days':
+        return 'day';
+      case 'custom': {
+        // For custom ranges, use daily if span > 7 days, else hourly
+        if (customFromDate && customToDate) {
+          const [fromYear, fromMonth, fromDay] = customFromDate.split('-').map(Number);
+          const [toYear, toMonth, toDay] = customToDate.split('-').map(Number);
+          const fromDate = new Date(Date.UTC(fromYear, fromMonth - 1, fromDay));
+          const toDate = new Date(Date.UTC(toYear, toMonth - 1, toDay));
+          const diffDays = (toDate - fromDate) / (1000 * 60 * 60 * 24);
+          return diffDays > 7 ? 'day' : 'hour';
+        }
+        return 'hour';
+      }
+      default:
+        return 'hour';
+    }
   };
 
   // Compute from_date and to_date based on selected range
@@ -431,15 +464,15 @@ const Dashboard = () => {
       const fromDate = computedDateRange?.fromDateISO || computeDateRange('today', '', '').fromDateISO;
       const toDate = computedDateRange?.toDateISO || computeDateRange('today', '', '').toDateISO;
       
-      // Get selected timeline range for interval parameter only
-      const selectedRange = timelineRanges.find(r => r.value === timelineRange) || timelineRanges[1];
+      // Determine interval based on selected date range (top dropdown)
+      const interval = getIntervalForDateRange(selectedRange);
       
       // Fetch stats and chart data in parallel
       const [statsRes, chartDataRes, timelineRes, threatRes] = await Promise.allSettled([
         fetch(`${API_BASE_URL}/api/dashboard/stats?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
         fetch(`${API_BASE_URL}/api/dashboard/stats/chart-data?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
-        fetch(`${API_BASE_URL}/api/dashboard/timeline?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}&interval=${selectedRange.interval}`),
-        fetch(`${API_BASE_URL}/api/dashboard/threat-sources?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
+        fetch(`${API_BASE_URL}/api/dashboard/timeline?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}&interval=${interval}`),
+        fetch(`${API_BASE_URL}/api/dashboard/threat-sources?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}&interval=${interval}`),
       ]);
 
       const statsData = statsRes.status === 'fulfilled' && statsRes.value.ok 
@@ -512,18 +545,23 @@ const Dashboard = () => {
 
       // Always set timeline data (backend should return data even if empty)
       if (timelineDataRes && Array.isArray(timelineDataRes) && timelineDataRes.length > 0) {
+        console.log("Sample timeline row:", timelineDataRes[0]);
         setTimelineData(timelineDataRes);
         console.log('Timeline data loaded:', timelineDataRes.length, 'periods');
       } else {
-        // Fallback: create empty timeline based on selected range
-        const selectedRange = timelineRanges.find(r => r.value === timelineRange) || timelineRanges[1];
+        // Fallback: create empty timeline based on selected date range
+        const interval = getIntervalForDateRange(selectedRange);
         let emptyTimeline = [];
         
-        if (selectedRange.interval === 'day') {
-          const numDays = selectedRange.hours / 24;
+        if (interval === 'day') {
+          // For daily intervals, generate empty days
+          const fromDate = new Date(computedDateRange.fromDateISO);
+          const toDate = new Date(computedDateRange.toDateISO);
+          const numDays = Math.ceil((toDate - fromDate) / (1000 * 60 * 60 * 24)) + 1;
+          
           emptyTimeline = Array.from({ length: numDays }, (_, i) => {
-            const date = new Date();
-            date.setDate(date.getDate() - (numDays - 1 - i));
+            const date = new Date(fromDate);
+            date.setDate(date.getDate() + i);
             return {
               time: `${(date.getMonth() + 1).toString().padStart(2, '0')}/${date.getDate().toString().padStart(2, '0')}`,
               HIGH_SEVERITY: 0,
@@ -532,7 +570,8 @@ const Dashboard = () => {
             };
           });
         } else {
-          const numHours = Math.min(selectedRange.hours, 24);
+          // For hourly intervals, generate empty hours
+          const numHours = Math.min(24, 24);
           emptyTimeline = Array.from({ length: numHours }, (_, i) => {
             const hour = new Date();
             hour.setHours(hour.getHours() - (numHours - 1 - i));
@@ -558,16 +597,10 @@ const Dashboard = () => {
     }
   };
 
-  // Set up real-time polling (every 5 seconds)
+  
   useEffect(() => {
-    fetchDashboardData(); // Initial fetch
-    
-    const interval = setInterval(() => {
-      fetchDashboardData();
-    }, 5000); // Poll every 5 seconds
-
-    return () => clearInterval(interval);
-  }, [computedDateRange, timelineRange]); // Re-fetch when date range or timeline range changes
+    fetchDashboardData(); 
+  }, [computedDateRange, selectedRange]); 
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 sm:p-8 font-inter">
@@ -649,9 +682,12 @@ const Dashboard = () => {
           </div>
 
           {/* Generate PDF Button */}
-          <button className="flex items-center bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl transition-colors duration-200 shadow-lg shadow-blue-500/30">
+          <button 
+            onClick={handleExportCSV}
+            className="flex items-center bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl transition-colors duration-200 shadow-lg shadow-blue-500/30"
+          >
             <Download className="w-4 h-4 mr-2" />
-            Generate PDF
+            Generate CSV
           </button>
         </div>
       </header>
@@ -720,20 +756,7 @@ const Dashboard = () => {
         <Card className="h-[450px]">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-bold">Attack Timeline</h2>
-            <div className="relative">
-              <select
-                value={timelineRange}
-                onChange={(e) => setTimelineRange(e.target.value)}
-                className="appearance-none bg-gray-800/70 border border-gray-700 rounded-lg px-4 py-2 pr-8 text-white text-sm cursor-pointer hover:bg-gray-800 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                {timelineRanges.map((range) => (
-                  <option key={range.value} value={range.value} className="bg-gray-800">
-                    {range.label}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-            </div>
+    
           </div>
           <div className="flex justify-center space-x-4 text-xs mb-4">
             <span className="flex items-center text-red-400"><div className="w-3 h-3 mr-1 rounded-full bg-red-400"></div>HIGH SEVERITY</span>
@@ -748,15 +771,27 @@ const Dashboard = () => {
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                 <XAxis 
-                  dataKey="time" 
-                  stroke="#9ca3af" 
-                  tick={{ fontSize: 10 }} 
-                  interval={timelineRange === '7d' || timelineRange === '30d' ? 'preserveStartEnd' : 2}
-                  angle={timelineRange === '7d' || timelineRange === '30d' ? -45 : 0}
-                  textAnchor={timelineRange === '7d' || timelineRange === '30d' ? 'end' : 'middle'}
-                  height={timelineRange === '7d' || timelineRange === '30d' ? 60 : 30}
-                />
-                <YAxis stroke="#9ca3af" tick={{ fontSize: 10 }} domain={[0, 'auto']} />
+                  dataKey="time"
+                  stroke="#9ca3af"
+                  tick={{ fontSize: 10 }}
+                  height={30}
+                  interval="preserveStartEnd"
+                  minTickGap={40}
+                  tickCount={8}
+                  tickFormatter={(value) => {
+                    // if value is ISO date -> show only date
+                    if (value.includes('T')) {
+                      return value.split('T')[0].slice(5); // MM-DD
+                    }
+                    return value;
+                  }}
+                  />
+                <YAxis  
+                        stroke="#9ca3af"
+                        tick={{ fontSize: 10 }}
+                        domain={[0, 'auto']}
+                        tickCount={5} 
+                        />
                 <Tooltip
                   contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '0.5rem' }}
                   labelStyle={{ color: '#ffffff' }}

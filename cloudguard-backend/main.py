@@ -7,7 +7,10 @@ import os
 from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import List, Dict, Optional
-
+from fastapi import APIRouter, Response
+import csv
+import io
+import re
 # =====================
 # LOAD ENV
 # =====================
@@ -125,25 +128,237 @@ def get_all_logs(limit=1000):
     return response.data or []
 
 # =====================
-# CHATBOT (UNCHANGED)
+# INTENT DETECTION
+# =====================
+def normalize(text: str) -> str:
+    """Normalize text: lowercase, remove punctuation (except / and -), and collapse spaces"""
+    text = text.lower()
+    text = re.sub(r"[^\w\s/-]", "", text)  # Remove punctuation but preserve / and -
+    text = re.sub(r'\s+', ' ', text)     # Collapse multiple spaces
+    return text.strip()
+
+def detect_intent(message: str) -> str:
+    """Detect user intent from message using keyword grouping"""
+    normalized = normalize(message)
+    words = normalized.split()
+    
+    # Helper: check if any word starts with a keyword (handles plurals, variations)
+    def has_keyword(words_list, keyword):
+        return any(w.startswith(keyword) for w in words_list)
+    
+    # last_attack: requires "last" AND "attack"
+    if has_keyword(words, 'last') and has_keyword(words, 'attack'):
+        return "last_attack"
+    
+    # total_logs: requires "log" AND ("total" OR "count" OR "many")
+    if has_keyword(words, 'log') and any(has_keyword(words, kw) for kw in ['total', 'count', 'many']):
+        return "total_logs"
+    
+    # total_attacks: requires "attack" AND ("total" OR "count" OR "many")
+    if has_keyword(words, 'attack') and any(has_keyword(words, kw) for kw in ['total', 'count', 'many']):
+        return "total_attacks"
+    
+    return "unknown"
+
+def detect_date_range(message: str) -> tuple:
+    """Detect date range from message keywords or date formats.
+    
+    Returns:
+        (from_date: str, to_date: str, label: str) all in ISO 8601 UTC format ending with 'Z'
+    """
+    normalized = normalize(message)
+    now = datetime.utcnow()
+    
+    # Helper: parse date string in DD-MM-YYYY or DD/MM/YYYY format
+    def parse_date(date_str: str):
+        """Parse date and return datetime object or None"""
+        try:
+            # Try DD-MM-YYYY
+            if "-" in date_str:
+                return datetime.strptime(date_str, "%d-%m-%Y")
+            # Try DD/MM/YYYY
+            elif "/" in date_str:
+                return datetime.strptime(date_str, "%d/%m/%Y")
+        except (ValueError, AttributeError):
+            pass
+        return None
+    
+    # Priority 1: Check for range (from-to)
+    range_match = re.search(r'from\s+([\d\-/]+)\s+to\s+([\d\-/]+)', normalized)
+    if range_match:
+        from_str, to_str = range_match.groups()
+        from_dt = parse_date(from_str)
+        to_dt = parse_date(to_str)
+        if from_dt and to_dt:
+            from_dt = from_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+            to_dt = to_dt.replace(hour=23, minute=59, second=59, microsecond=0)
+            label = f"from {from_str} to {to_str}"
+            return (from_dt.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+                    to_dt.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+                    label)
+    
+    # Priority 2: Check for single date (DD-MM-YYYY or DD/MM/YYYY)
+    date_match = re.search(r'(\d{2}[-/]\d{2}[-/]\d{4})', normalized)
+    if date_match:
+        date_str = date_match.group(1)
+        parsed_date = parse_date(date_str)
+        if parsed_date:
+            from_dt = parsed_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            to_dt = parsed_date.replace(hour=23, minute=59, second=59, microsecond=0)
+            label = f"on {date_str}"
+            return (from_dt.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+                    to_dt.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+                    label)
+    
+    # Priority 3: Today
+    if "today" in normalized:
+        from_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        to_date = now
+        label = "today"
+        return (from_date.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+                to_date.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+                label)
+    
+    # Priority 4: Yesterday
+    if "yesterday" in normalized:
+        yesterday = now - timedelta(days=1)
+        from_date = yesterday.replace(hour=0, minute=0, second=0, microsecond=0)
+        to_date = yesterday.replace(hour=23, minute=59, second=59, microsecond=0)
+        label = "yesterday"
+        return (from_date.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+                to_date.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+                label)
+    
+    # Priority 5: Last 7 days (also handles "7 days")
+    if "last 7" in normalized or "7 days" in normalized:
+        from_date = now - timedelta(days=7)
+        to_date = now
+        label = "last 7 days"
+        return (from_date.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+                to_date.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+                label)
+    
+    # Priority 6: Default: last 7 days
+    from_date = now - timedelta(days=7)
+    to_date = now
+    label = "last 7 days"
+    return (from_date.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+            to_date.strftime('%Y-%m-%dT%H:%M:%SZ'), 
+            label)
+
+# =====================
+# CHATBOT
 # =====================
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
-    logs = get_recent_logs()
-    if not logs:
-        return ChatResponse(answer="❌ Unable to fetch data from Supabase.")
+    try:
+        intent = detect_intent(req.message)
+        from_date, to_date, date_label = detect_date_range(req.message)
+        
+        if intent == "last_attack":
+            # Return info about last attack within date range
+            logs = get_logs_by_date_range(from_date, to_date)
+            for log in logs:
+                if log["attack_type"] != "Benign":
+                    try:
+                        # Parse timestamp and format it
+                        timestamp_str = log["created_at"]
+                        if timestamp_str.endswith('Z'):
+                            timestamp_str = timestamp_str.replace('Z', '+00:00')
+                        attack_time = datetime.fromisoformat(timestamp_str)
+                        formatted_time = attack_time.strftime("%d-%m-%Y %H:%M:%S")
+                        attack_type = log.get("attack_type", "Unknown")
+                        return ChatResponse(answer=f"Last attack occurred on {formatted_time} from {log['srcaddr']} ({attack_type}).")
+                    except Exception:
+                        return ChatResponse(answer=f"Last attack {date_label} from {log['srcaddr']} ({log.get('attack_type', 'Attack')}).")
+            return ChatResponse(answer="No recent attacks were detected.")
+        
+        elif intent == "total_logs":
+            # Return total number of logs in date range
+            total_logs = get_total_logs_count(from_date, to_date)
+            if total_logs == 0:
+                return ChatResponse(answer=f"No logs were recorded {date_label}.")
+            return ChatResponse(answer=f"Total logs {date_label}: {total_logs}")
+        
+        elif intent == "total_attacks":
+            # Count attacks in date range
+            total_logs = get_total_logs_count(from_date, to_date)
+            if total_logs == 0:
+                return ChatResponse(answer=f"No logs were recorded {date_label}.")
+            
+            total_attacks = get_total_attacks_count(from_date, to_date)
+            if total_attacks == 0:
+                return ChatResponse(answer=f"No attacks were detected {date_label}.")
+            return ChatResponse(answer=f"Total attacks {date_label}: {total_attacks}")
+        
+        else:
+            # Unknown intent
+            return ChatResponse(answer="I can answer questions about logs and attacks.")
+    
+    except Exception as e:
+        print(f"[ERROR] chat endpoint: {e}")
+        return ChatResponse(answer="Unable to retrieve data for the selected date.")
+#csv download api
 
-    for log in logs:
-        if log["attack_type"] != "Benign":
-            return ChatResponse(answer=f"Last attack from {log['srcaddr']}")
+router = APIRouter()
 
-    return ChatResponse(answer="No recent attacks detected.")
+@router.get("/api/dashboard/export-csv")
+def export_csv(from_date: str, to_date: str):
+    rows = get_logs_by_date_range(from_date, to_date)
+
+    if not rows:
+        return Response(
+            content="",
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=cloudguard_logs.csv"},
+        )
+
+    # Remove "action" column from each row
+    for row in rows:
+        row.pop("action", None)
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+    writer.writeheader()
+    writer.writerows(rows)
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=cloudguard_logs.csv"
+        },
+    )
+app.include_router(router)
 
 # =====================
 # DASHBOARD STATS
 # =====================
 @app.get("/api/dashboard/stats")
 async def get_dashboard_stats(from_date: str, to_date: str):
+    logs = get_logs_by_date_range(from_date, to_date)
+
+    print("\n===== DASHBOARD STATS DEBUG =====")
+    print(f"Total rows fetched from DB: {len(logs)}")
+
+    attack_count = 0
+    for log in logs:
+        try:
+            predicted_label = int(log.get("predicted_label", 0))
+        except:
+            predicted_label = 0
+
+        if predicted_label != 0:
+            attack_count += 1
+
+    print(f"Rows treated as ATTACKS: {attack_count}")
+
+    if logs:
+        print("Sample row:", {
+            "predicted_label": logs[0].get("predicted_label"),
+            "attack_type": logs[0].get("attack_type"),
+            "confidence": logs[0].get("confidence"),
+        })
     """
     Dashboard KPIs:
     - Total Logs      → COUNT(*) with date filter only
