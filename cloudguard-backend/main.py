@@ -4,6 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client
 from dotenv import load_dotenv
 import os
+import asyncio
+import urllib.request
+import json
 from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import List, Dict, Optional
@@ -36,7 +39,53 @@ else:
 # =====================
 # FASTAPI APP
 # =====================
+
+def get_region_for_ip(ip: str) -> str:
+    if not ip or ip.startswith("192.168.") or ip.startswith("10.") or ip == "127.0.0.1":
+        return "Local"
+    try:
+        url = f"http://ip-api.com/json/{ip}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            if data.get("status") == "success":
+                region = data.get("regionName", "Unknown")
+                country = data.get("countryCode", "Unknown")
+                return f"{region}, {country}"
+    except Exception as e:
+        print(f"Error getting region for {ip}: {e}")
+    return "Unknown"
+
+async def backfill_regions_bg():
+    while True:
+        try:
+            # Check for empty regions first
+            res = supabase.table("cloudguard_logs").select("id, srcaddr").filter("region", "is", "null").limit(50).execute()
+            data = res.data or []
+            if not data:
+                res2 = supabase.table("cloudguard_logs").select("id, srcaddr").eq("region", "").limit(50).execute()
+                data = res2.data or []
+            
+            for row in data:
+                ip = row.get("srcaddr")
+                if ip:
+                    # Run synchronous urllib in a background thread to prevent blocking FastAPI event loop
+                    region = await asyncio.to_thread(get_region_for_ip, ip)
+                    supabase.table("cloudguard_logs").update({"region": region}).eq("id", row["id"]).execute()
+                    await asyncio.sleep(1.5) # respect rate limit of 45/min
+            
+            # If no more rows, sleep longer
+            if not data:
+                await asyncio.sleep(60)
+        except Exception as e:
+            print("Error backfilling regions:", e)
+            await asyncio.sleep(60)
+
 app = FastAPI()
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(backfill_regions_bg())
 
 app.add_middleware(
     CORSMiddleware,
@@ -597,6 +646,7 @@ async def get_threat_sources(from_date: str, to_date: str):
         
         # STEP 3-4: Group by srcaddr and count, skip null/empty
         source_counts = defaultdict(int)
+        source_regions = {}
         sources_skipped = 0
         
         for log in attacks:
@@ -606,6 +656,9 @@ async def get_threat_sources(from_date: str, to_date: str):
                 sources_skipped += 1
                 continue
             source_counts[srcaddr] += 1
+            if srcaddr not in source_regions:
+                region = log.get("region")
+                source_regions[srcaddr] = region if region else "Unknown"
         
         print(f"Unique source IPs: {len(source_counts)}")
         print(f"Sources skipped (empty): {sources_skipped}")
@@ -624,7 +677,7 @@ async def get_threat_sources(from_date: str, to_date: str):
         colors = ['#ef4444', '#f59e0b', '#60a5fa', '#10b981', '#a855f7']
         
         result = [
-            {"name": name, "threats": count, "color": colors[i]}
+            {"name": f"{name} ({source_regions.get(name, 'Unknown')})", "threats": count, "color": colors[i]}
             for i, (name, count) in enumerate(sorted_sources[:5])
         ]
         
@@ -633,6 +686,87 @@ async def get_threat_sources(from_date: str, to_date: str):
         
     except Exception as e:
         print(f"[ERROR] get_threat_sources: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+# =====================
+# ALL LOCATIONS / MAP DATA
+# =====================
+@app.get("/api/dashboard/locations")
+async def get_locations(from_date: str, to_date: str):
+    """Aggregate traffic by location (region) including both benign and attack counts.
+    Provides coordinates for map rendering.
+    """
+    try:
+        logs = get_logs_by_date_range(from_date, to_date)
+        
+        # Mapping of country codes to approx [longitude, latitude]
+        COUNTRY_LON_LAT = {
+            "US": [-97.0, 38.0], "California": [-119.4, 36.7], "New York": [-74.0, 40.7], "Texas": [-99.9, 31.9], "Virginia": [-78.6, 37.4], "Ohio": [-82.9, 40.4], "Oregon": [-120.5, 43.8],
+            "CN": [105.0, 35.0], "Beijing": [116.4, 39.9],
+            "RU": [105.3, 61.5], "Moscow": [37.6, 55.7],
+            "BR": [-51.9, -14.2], "São Paulo": [-46.6, -23.5],
+            "IN": [79.0, 20.6], "Maharashtra": [75.7, 19.7],
+            "GB": [-3.4, 55.3], "England": [-1.1, 52.3], "London": [-0.1, 51.5],
+            "DE": [10.4, 51.1], "Hesse": [9.0, 50.6], "Bavaria": [11.4, 48.7],
+            "FR": [2.2, 46.2], "Île-de-France": [2.3, 48.8], "Provence-Alpes-Côte d'Azur": [6.0, 43.9],
+            "JP": [138.2, 36.2], "Tokyo": [139.6, 35.6],
+            "KR": [127.7, 35.9], "Seoul": [126.9, 37.5],
+            "ZA": [22.9, -30.5],
+            "AU": [133.7, -25.2], "New South Wales": [151.2, -33.8],
+            "CA": [-106.3, 56.1], "Quebec": [-71.2, 46.8], "Ontario": [-79.4, 43.6],
+            "IT": [12.5, 41.8],
+            "ES": [-3.7, 40.4], "Madrid": [-3.7, 40.4],
+            "NL": [5.2, 52.1], "North Holland": [4.9, 52.3],
+            "SG": [103.8, 1.3],
+            "TW": [120.9, 23.6],
+            "UA": [31.1, 48.3],
+            "IR": [53.6, 32.4],
+            "TR": [35.2, 38.9], "Istanbul": [28.9, 41.0],
+            "HK": [114.1, 22.3], "Kwai Tsing District": [114.1, 22.3],
+            "Unknown": [0.0, 0.0]
+        }
+        
+        location_data = {}
+        for log in logs:
+            region_str = log.get("region", "Unknown")
+            # Handle empty strings that slip through
+            if not region_str or region_str == "ap-south-1" or "ap south 1" in region_str.lower():
+                continue
+            
+            parts = region_str.split(", ")
+            country = parts[-1] if len(parts) > 1 else parts[0]
+            
+            try:
+                pred = int(log.get("predicted_label", 0))
+            except:
+                pred = 0
+            is_attack = pred != 0
+            
+            if region_str not in location_data:
+                # Prioritize full region_str mapping if exists, else fallback to country part
+                coords = COUNTRY_LON_LAT.get(region_str, COUNTRY_LON_LAT.get(country, [0.0, 0.0]))
+                location_data[region_str] = {
+                    "name": region_str, # Use region_str instead of 'country' to properly label on map
+                    "region": region_str,
+                    "benign": 0,
+                    "attack": 0,
+                    "coordinates": coords
+                }
+                
+            if is_attack:
+                location_data[region_str]["attack"] += 1
+            else:
+                location_data[region_str]["benign"] += 1
+                
+        # Filter out anything with zero points? No, keep all to show insights
+        result = list(location_data.values())
+        result.sort(key=lambda x: x["benign"] + x["attack"], reverse=True)
+        return result
+        
+    except Exception as e:
+        print(f"[ERROR] get_locations: {e}")
         import traceback
         traceback.print_exc()
         return []

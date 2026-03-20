@@ -3,8 +3,9 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell,
 } from 'recharts';
 import {
-  Calendar, ChevronDown, Download, AlertTriangle, ArrowRight, TrendingUp, Cpu, MessageSquare, Send, X, Clock, Database, Percent, Shield,
+  Calendar, ChevronDown, Download, AlertTriangle, ArrowRight, TrendingUp, Cpu, MessageSquare, Send, X, Clock, Database, Percent, Shield, MapPin, Globe
 } from 'lucide-react';
+import { ComposableMap, Geographies, Geography, Marker, Line as RSMLine, ZoomableGroup, Graticule } from "react-simple-maps";
 
 // --- API Configuration ---
 const API_BASE_URL = 'http://127.0.0.1:8000';
@@ -256,6 +257,7 @@ const Dashboard = () => {
   
   const [timelineData, setTimelineData] = useState([]);
   const [threatSourceData, setThreatSourceData] = useState([]);
+  const [locationData, setLocationData] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
 
   // Date range selector state
@@ -271,7 +273,7 @@ const Dashboard = () => {
     'created_at', 'srcport', 'dstport', 'protocol', 'packets', 'bytes', 
     'start', 'end', 'tcp_flags', 'predicted_label', 'confidence', 'id', 
     'srcaddr', 'dstaddr', 'pkt_srcaddr', 'pkt_dstaddr', 'region', 
-    'flow_direction', 'traffic_path', 'interface_id', 'log_status', 'action', 'attack_type'
+    'flow_direction', 'traffic_path', 'interface_id', 'log_status', 'action', 'attack_type', 'datacenter'
   ];
   const [selectedColumns, setSelectedColumns] = useState(new Set(csvColumns));
 
@@ -493,9 +495,10 @@ const Dashboard = () => {
   // Fetch dashboard data from backend
   const fetchDashboardData = async () => {
     try {
-      // Get dates from computed range (defaults to today if missing)
-      const fromDate = computedDateRange?.fromDateISO || computeDateRange('today', '', '').fromDateISO;
-      const toDate = computedDateRange?.toDateISO || computeDateRange('today', '', '').toDateISO;
+      // ALWAYS compute the range fresh so 'now' is updated on every poll
+      const currentRange = computeDateRange(selectedRange, customFromDate, customToDate);
+      const fromDate = currentRange.fromDateISO;
+      const toDate = currentRange.toDateISO;
       
       // Determine interval based on selected date range (top dropdown)
       const interval = getIntervalForDateRange(selectedRange);
@@ -517,11 +520,12 @@ const Dashboard = () => {
       console.log(`   Chart interval: ${interval}`);
       
       // Fetch stats and chart data in parallel
-      const [statsRes, chartDataRes, timelineRes, threatRes] = await Promise.allSettled([
+      const [statsRes, chartDataRes, timelineRes, threatRes, locationRes] = await Promise.allSettled([
         fetch(`${API_BASE_URL}/api/dashboard/stats?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
         fetch(`${API_BASE_URL}/api/dashboard/stats/chart-data?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
         fetch(`${API_BASE_URL}/api/dashboard/timeline?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}&interval=${interval}`),
         fetch(`${API_BASE_URL}/api/dashboard/threat-sources?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}&interval=${interval}`),
+        fetch(`${API_BASE_URL}/api/dashboard/locations?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
       ]);
 
       const statsData = statsRes.status === 'fulfilled' && statsRes.value.ok 
@@ -540,6 +544,10 @@ const Dashboard = () => {
         ? await threatRes.value.json()
         : [];
       
+      const locationDataRes = locationRes.status === 'fulfilled' && locationRes.value.ok
+        ? await locationRes.value.json()
+        : [];
+      
       // DEBUG: Log raw API responses
       console.log('\n📊 [Dashboard] Raw API Responses:');
       console.log(`   Stats - total_logs: ${statsData.total_logs}, total_attacks: ${statsData.total_attacks}`);
@@ -556,56 +564,60 @@ const Dashboard = () => {
       }
 
       // Update stats with real data - 4 KPIs in order: Total Logs, Total Attacks Detected, Attack % of Traffic, Most Common Attack Type
-      setStats([
-        {
-          title: "Total Logs",
-          value: statsData.total_logs >= 1000 ? `${(statsData.total_logs / 1000).toFixed(1)}K` : (statsData.total_logs || 0).toString(),
-          subtext: "Derived from ingested traffic logs",
-          change: 0,
-          icon: Database,
-          color: "text-blue-400",
-          fill: "fill-blue-400",
-          chartData: [0, 0, 0, 0, 0, 0, 0], // Chart data not needed for this KPI
-          chartColor: "#60a5fa",
-        },
-        {
-          title: "Total Attacks Detected",
-          value: statsData.total_attacks >= 1000 ? `${(statsData.total_attacks / 1000).toFixed(1)}K` : (statsData.total_attacks || 0).toString(),
-          subtext: "Derived from non-zero predicted labels",
-          change: statsData.total_attacks_change || 0,
-          icon: TrendingUp,
-          color: "text-red-500",
-          fill: "fill-red-500",
-          chartData: chartData.total_attacks || [0, 0, 0, 0, 0, 0, 0],
-          chartColor: "#ef4444",
-        },
-        {
-          title: "Attack % of Traffic",
-          value: `${(statsData.attack_percentage || 0).toFixed(2)}%`,
-          subtext: "Derived from ML classification results",
-          change: 0,
-          icon: Percent,
-          color: "text-yellow-500",
-          fill: "fill-yellow-500",
-          chartData: [0, 0, 0, 0, 0, 0, 0], // Chart data not needed for this KPI
-          chartColor: "#f59e0b",
-        },
-        {
-          title: "Most Common Attack Type",
-          value: statsData.most_common_attack_type && statsData.most_common_attack_type !== "None" 
-            ? statsData.most_common_attack_type.length > 12 
-              ? statsData.most_common_attack_type.substring(0, 12) + "..."
-              : statsData.most_common_attack_type
-            : "None",
-          subtext: "Derived from attack type frequency analysis",
-          change: 0,
-          icon: Shield,
-          color: "text-green-500",
-          fill: "fill-green-500",
-          chartData: [0, 0, 0, 0, 0, 0, 0], // Chart data not needed for this KPI
-          chartColor: "#10b981",
-        },
-      ]);
+      setStats(prev => {
+        const newStats = [
+          {
+            title: "Total Logs",
+            value: statsData.total_logs >= 1000 ? `${(statsData.total_logs / 1000).toFixed(1)}K` : (statsData.total_logs || 0).toString(),
+            subtext: "Derived from ingested traffic logs",
+            change: 0,
+            icon: Database,
+            color: "text-blue-400",
+            fill: "fill-blue-400",
+            chartData: [0, 0, 0, 0, 0, 0, 0], // Chart data not needed for this KPI
+            chartColor: "#60a5fa",
+          },
+          {
+            title: "Total Attacks Detected",
+            value: statsData.total_attacks >= 1000 ? `${(statsData.total_attacks / 1000).toFixed(1)}K` : (statsData.total_attacks || 0).toString(),
+            subtext: "Derived from non-zero predicted labels",
+            change: statsData.total_attacks_change || 0,
+            icon: TrendingUp,
+            color: "text-red-500",
+            fill: "fill-red-500",
+            chartData: chartData.total_attacks || [0, 0, 0, 0, 0, 0, 0],
+            chartColor: "#ef4444",
+          },
+          {
+            title: "Attack % of Traffic",
+            value: `${(statsData.attack_percentage || 0).toFixed(2)}%`,
+            subtext: "Derived from ML classification results",
+            change: 0,
+            icon: Percent,
+            color: "text-yellow-500",
+            fill: "fill-yellow-500",
+            chartData: [0, 0, 0, 0, 0, 0, 0], // Chart data not needed for this KPI
+            chartColor: "#f59e0b",
+          },
+          {
+            title: "Most Common Attack Type",
+            value: statsData.most_common_attack_type && statsData.most_common_attack_type !== "None" 
+              ? statsData.most_common_attack_type.length > 12 
+                ? statsData.most_common_attack_type.substring(0, 12) + "..."
+                : statsData.most_common_attack_type
+              : "None",
+            subtext: "Derived from attack type frequency analysis",
+            change: 0,
+            icon: Shield,
+            color: "text-green-500",
+            fill: "fill-green-500",
+            chartData: [0, 0, 0, 0, 0, 0, 0], // Chart data not needed for this KPI
+            chartColor: "#10b981",
+          },
+        ];
+        // Only update if stats have changed to avoid chart re-animation
+        return JSON.stringify(prev) === JSON.stringify(newStats) ? prev : newStats;
+      });
 
       // Always set timeline data (backend should return data even if empty)
       if (timelineDataRes && Array.isArray(timelineDataRes) && timelineDataRes.length > 0) {
@@ -616,7 +628,7 @@ const Dashboard = () => {
           console.log("\n✅ [Timeline] Data with attacks received:", timelineDataRes.length, 'data points');
           console.log("📈 Sample row:", timelineDataRes[0]);
           console.log("🔍 All data keys:", Object.keys(timelineDataRes[0]));
-          setTimelineData(timelineDataRes);
+          setTimelineData(prev => JSON.stringify(prev) === JSON.stringify(timelineDataRes) ? prev : timelineDataRes);
           console.log('✓ Timeline data loaded:', timelineDataRes.length, 'periods');
         } else {
           console.warn('\n⚠️ [Timeline] Received buckets but all have zero attacks');
@@ -628,7 +640,7 @@ const Dashboard = () => {
             console.warn('⚠️ No attacks detected for TODAY. Consider trying "Last 7 Days".');
           }
           
-          setTimelineData(timelineDataRes); // Set the empty buckets so chart shows the full timeline
+          setTimelineData(prev => JSON.stringify(prev) === JSON.stringify(timelineDataRes) ? prev : timelineDataRes); // Set the empty buckets so chart shows the full timeline
         }
       } else {
         // Fallback: create empty timeline based on selected date range
@@ -668,7 +680,7 @@ const Dashboard = () => {
           });
         }
         
-        setTimelineData(emptyTimeline);
+        setTimelineData(prev => JSON.stringify(prev) === JSON.stringify(emptyTimeline) ? prev : emptyTimeline);
         console.log('ℹ️ Using empty timeline fallback with', emptyTimeline.length, 'buckets');
       }
       
@@ -676,7 +688,7 @@ const Dashboard = () => {
       if (threatData && Array.isArray(threatData) && threatData.length > 0) {
         console.log("\n✅ [Threats] Data received:", threatData.length, 'source IPs');
         console.log("📊 Sample threat:", threatData[0]);
-        setThreatSourceData(threatData);
+        setThreatSourceData(prev => JSON.stringify(prev) === JSON.stringify(threatData) ? prev : threatData);
       } else {
         console.warn('\n⚠️ [Threats] No data received from backend');
         
@@ -685,8 +697,10 @@ const Dashboard = () => {
           console.warn('ℹ️ No attack sources detected for TODAY. Try "Last 7 Days" for more data.');
         }
         
-        setThreatSourceData([]);
+        setThreatSourceData(prev => JSON.stringify(prev) === JSON.stringify([]) ? prev : []);
       }
+      
+      setLocationData(prev => JSON.stringify(prev) === JSON.stringify(locationDataRes) ? prev : locationDataRes);
       
       setIsLoading(false);
     } catch (error) {
@@ -696,9 +710,15 @@ const Dashboard = () => {
     }
   };
 
-  
   useEffect(() => {
     fetchDashboardData(); 
+
+    // Auto-refresh the dashboard every 5 seconds
+    const interval = setInterval(() => {
+      fetchDashboardData();
+    }, 5000);
+
+    return () => clearInterval(interval);
   }, [computedDateRange, selectedRange]); 
 
   return (
@@ -1022,6 +1042,130 @@ const Dashboard = () => {
         </Card>
       </section>
 
+      {/* --- Map and Demographics Section --- */}
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-20">
+        
+        {/* Demographics / Access Locations */}
+        <Card className="flex flex-col h-[450px]">
+          <h2 className="text-xl font-bold mb-6 flex items-center">
+            <Globe className="w-5 h-5 mr-2 text-blue-400" />
+            Access Locations
+          </h2>
+          <div className="flex-1 overflow-y-auto custom-scrollbar pr-2">
+            {locationData.length > 0 ? (
+              <div className="space-y-4">
+                {locationData.map((loc, idx) => {
+                  const total = loc.benign + loc.attack;
+                  const attackPct = total > 0 ? Math.round((loc.attack / total) * 100) : 0;
+                  return (
+                    <div key={idx} className="bg-gray-800 rounded-lg p-3 border border-gray-700">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="font-semibold text-gray-200 text-sm flex items-center">
+                          <MapPin className="w-3 h-3 mr-1 text-gray-400" /> {loc.region}
+                        </span>
+                        <span className="text-xs text-gray-400">{total} Total</span>
+                      </div>
+                      <div className="flex h-2 rounded-full overflow-hidden bg-gray-700">
+                        <div style={{ width: `${100 - attackPct}%` }} className="bg-green-500"></div>
+                        <div style={{ width: `${attackPct}%` }} className="bg-red-500"></div>
+                      </div>
+                      <div className="flex justify-between mt-1 text-xs">
+                        <span className="text-green-400">{loc.benign} Normal</span>
+                        <span className="text-red-400">{loc.attack} Attack</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full text-center text-gray-400">
+                {isLoading ? <div><div className="animate-spin mb-3">⟳</div>Loading locations...</div> : <div>No location data available</div>}
+              </div>
+            )}
+          </div>
+        </Card>
+
+        {/* Attack Map */}
+        <Card className="lg:col-span-2 flex flex-col h-[450px] relative overflow-hidden">
+          <h2 className="text-xl font-bold mb-2 flex items-center z-10">
+            <MapPin className="w-5 h-5 mr-2 text-red-500" />
+            Global Threat Map
+          </h2>
+          <div className="absolute inset-0 pt-12 flex items-center justify-center bg-gray-900 border-t border-blue-900/30">
+            <ComposableMap projection="geoMercator" projectionConfig={{ scale: 130 }} className="opacity-90">
+              <ZoomableGroup center={[20, 20]} zoom={1} minZoom={1} maxZoom={8}>
+                <Graticule stroke="#1e293b" strokeWidth={0.5} />
+                <Geographies geography="https://unpkg.com/world-atlas@2.0.2/countries-110m.json">
+                  {({ geographies }) =>
+                    geographies.map((geo) => (
+                      <Geography
+                        key={geo.rsmKey}
+                        geography={geo}
+                        fill="#020617"
+                        stroke="#3b82f6"
+                        strokeWidth={0.5}
+                        style={{
+                          default: { outline: "none" },
+                          hover: { fill: "#1e293b", stroke: "#60a5fa", outline: "none", transition: "all 250ms" },
+                          pressed: { outline: "none" },
+                        }}
+                      />
+                    ))
+                  }
+                </Geographies>
+                
+                {/* Dest (ap-south-1 / Mumbai) Marker */}
+                <Marker coordinates={[72.8, 19.0]}>
+                  <circle r={5} fill="#06b6d4" />
+                  <circle r={12} fill="#06b6d4" opacity={0.4} className="animate-ping" />
+                  <text y={-10} x={10} fill="#06b6d4" fontSize={8} fontWeight="bold" className="shadow-lg">AP-SOUTH-1 Server</text>
+                </Marker>
+                
+                {/* Origin Markers and Arcs */}
+                {locationData.map((loc, idx) => {
+                  if (!loc.coordinates || (loc.coordinates[0] === 0 && loc.coordinates[1] === 0)) return null;
+                  
+                  // Don't draw an arc from Mumbai to Mumbai
+                  const isIndia = loc.coordinates[0] === 79.0 && loc.coordinates[1] === 20.6;
+                  
+                  const draws = [];
+                  if (loc.benign > 0) {
+                    draws.push({ isAttack: false, color: "#10b981", offset: isIndia ? 0 : 2 });
+                  }
+                  if (loc.attack > 0) {
+                    draws.push({ isAttack: true, color: "#ef4444", offset: isIndia ? 0 : -2 });
+                  }
+
+                  return (
+                    <g key={`loc-${idx}`}>
+                      <Marker coordinates={loc.coordinates}>
+                        <circle r={3} fill={loc.attack > 0 ? "#ef4444" : "#10b981"} />
+                        <text y={-8} x={5} fill="#9ca3af" fontSize={6} fontWeight="bold">{loc.name}</text>
+                      </Marker>
+                      
+                      {!isIndia && draws.map((draw, i) => (
+                        <RSMLine
+                          key={`arc-${idx}-${i}`}
+                          from={[loc.coordinates[0] + draw.offset, loc.coordinates[1] + draw.offset]}
+                          to={[72.8, 19.0]}
+                          stroke={draw.color}
+                          strokeWidth={draw.isAttack ? 1.5 : 0.8}
+                          strokeOpacity={draw.isAttack ? 0.8 : 0.4}
+                          strokeLinecap="round"
+                          style={{
+                            strokeDasharray: draw.isAttack ? "none" : "4 4",
+                            animation: draw.isAttack ? "dash 1.5s linear infinite" : "none"
+                          }}
+                        />
+                      ))}
+                    </g>
+                  );
+                })}
+              </ZoomableGroup>
+            </ComposableMap>
+          </div>
+        </Card>
+      </section>
       {/* --- AI Chatbot Interface (Fixed) --- */}
       <Chatbot isChatOpen={isChatOpen} toggleChat={toggleChat} />
     </div>
