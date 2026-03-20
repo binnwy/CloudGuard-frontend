@@ -265,6 +265,16 @@ const Dashboard = () => {
   const [customToDate, setCustomToDate] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
+  // CSV column selection state
+  const [showColumnSelector, setShowColumnSelector] = useState(false);
+  const csvColumns = [
+    'created_at', 'srcport', 'dstport', 'protocol', 'packets', 'bytes', 
+    'start', 'end', 'tcp_flags', 'predicted_label', 'confidence', 'id', 
+    'srcaddr', 'dstaddr', 'pkt_srcaddr', 'pkt_dstaddr', 'region', 
+    'flow_direction', 'traffic_path', 'interface_id', 'log_status', 'action', 'attack_type'
+  ];
+  const [selectedColumns, setSelectedColumns] = useState(new Set(csvColumns));
+
   const toggleChat = () => setIsChatOpen(prev => !prev);
 
   // Date range options
@@ -309,10 +319,33 @@ const Dashboard = () => {
     }
   };
 
+  // Handle column toggle
+  const handleColumnToggle = (column) => {
+    setSelectedColumns(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(column)) {
+        newSet.delete(column);
+      } else {
+        newSet.add(column);
+      }
+      return newSet;
+    });
+  };
+
+  // Handle "Select All" toggle
+  const handleSelectAllColumns = (checked) => {
+    if (checked) {
+      setSelectedColumns(new Set(csvColumns));
+    } else {
+      setSelectedColumns(new Set());
+    }
+  };
+
   // Handle CSV export
   const handleExportCSV = () => {
     const { fromDateISO, toDateISO } = computedDateRange;
-    const url = `${API_BASE_URL}/api/dashboard/export-csv?from_date=${encodeURIComponent(fromDateISO)}&to_date=${encodeURIComponent(toDateISO)}`;
+    const columnList = Array.from(selectedColumns).join(',');
+    const url = `${API_BASE_URL}/api/dashboard/export-csv?from_date=${encodeURIComponent(fromDateISO)}&to_date=${encodeURIComponent(toDateISO)}&columns=${encodeURIComponent(columnList)}`;
     window.open(url, '_blank');
   };
 
@@ -467,6 +500,22 @@ const Dashboard = () => {
       // Determine interval based on selected date range (top dropdown)
       const interval = getIntervalForDateRange(selectedRange);
       
+      // DEBUG: Log system time and date range
+      const now = new Date();
+      const todayDateString = now.toDateString(); // e.g., "Wed Mar 18 2026"
+      const todayDateStringUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toDateString();
+      
+      console.log('\n🕐 [Dashboard] System Time & Date Range:');
+      console.log(`   Local time: ${now.toString()}`);
+      console.log(`   UTC time: ${now.toUTCString()}`);
+      console.log(`   Today (local): ${todayDateString}`);
+      console.log(`   Today (UTC): ${todayDateStringUTC}`);
+      console.log(`   Timezone offset: ${now.getTimezoneOffset()} minutes`);
+      console.log(`   Selected range: ${selectedRange}`);
+      console.log(`   API from_date: ${fromDate}`);
+      console.log(`   API to_date: ${toDate}`);
+      console.log(`   Chart interval: ${interval}`);
+      
       // Fetch stats and chart data in parallel
       const [statsRes, chartDataRes, timelineRes, threatRes] = await Promise.allSettled([
         fetch(`${API_BASE_URL}/api/dashboard/stats?from_date=${encodeURIComponent(fromDate)}&to_date=${encodeURIComponent(toDate)}`),
@@ -490,6 +539,21 @@ const Dashboard = () => {
       const threatData = threatRes.status === 'fulfilled' && threatRes.value.ok
         ? await threatRes.value.json()
         : [];
+      
+      // DEBUG: Log raw API responses
+      console.log('\n📊 [Dashboard] Raw API Responses:');
+      console.log(`   Stats - total_logs: ${statsData.total_logs}, total_attacks: ${statsData.total_attacks}`);
+      console.log(`   Timeline - entries: ${timelineDataRes?.length || 0}`);
+      if (timelineDataRes?.length > 0) {
+        console.log(`   Timeline sample:`, timelineDataRes[0]);
+        // Show date breakdown if we have timeline data
+        const timeKeys = timelineDataRes.map(d => d.time);
+        console.log(`   Timeline time keys: ${timeKeys.join(', ')}`);
+      }
+      console.log(`   Threats - entries: ${threatData?.length || 0}`);
+      if (threatData?.length > 0) {
+        console.log(`   Threats sample:`, threatData[0]);
+      }
 
       // Update stats with real data - 4 KPIs in order: Total Logs, Total Attacks Detected, Attack % of Traffic, Most Common Attack Type
       setStats([
@@ -545,13 +609,33 @@ const Dashboard = () => {
 
       // Always set timeline data (backend should return data even if empty)
       if (timelineDataRes && Array.isArray(timelineDataRes) && timelineDataRes.length > 0) {
-        console.log("Sample timeline row:", timelineDataRes[0]);
-        setTimelineData(timelineDataRes);
-        console.log('Timeline data loaded:', timelineDataRes.length, 'periods');
+        // Check if any buckets have non-zero data
+        const hasData = timelineDataRes.some(d => d.HIGH_SEVERITY > 0 || d.MEDIUM_SEVERITY > 0 || d.LOW_SEVERITY > 0);
+        
+        if (hasData) {
+          console.log("\n✅ [Timeline] Data with attacks received:", timelineDataRes.length, 'data points');
+          console.log("📈 Sample row:", timelineDataRes[0]);
+          console.log("🔍 All data keys:", Object.keys(timelineDataRes[0]));
+          setTimelineData(timelineDataRes);
+          console.log('✓ Timeline data loaded:', timelineDataRes.length, 'periods');
+        } else {
+          console.warn('\n⚠️ [Timeline] Received buckets but all have zero attacks');
+          console.log('First bucket:', timelineDataRes[0]);
+          console.log('Last bucket:', timelineDataRes[timelineDataRes.length - 1]);
+          
+          // If "Today" has no data but we got empty buckets, check if we should suggest expanding date range
+          if (selectedRange === 'today') {
+            console.warn('⚠️ No attacks detected for TODAY. Consider trying "Last 7 Days".');
+          }
+          
+          setTimelineData(timelineDataRes); // Set the empty buckets so chart shows the full timeline
+        }
       } else {
         // Fallback: create empty timeline based on selected date range
         const interval = getIntervalForDateRange(selectedRange);
         let emptyTimeline = [];
+        
+        console.warn('\n⚠️ [Timeline] No buckets received from backend for range:', selectedRange);
         
         if (interval === 'day') {
           // For daily intervals, generate empty days
@@ -585,13 +669,28 @@ const Dashboard = () => {
         }
         
         setTimelineData(emptyTimeline);
-        console.log('Using empty timeline fallback');
+        console.log('ℹ️ Using empty timeline fallback with', emptyTimeline.length, 'buckets');
       }
       
-      setThreatSourceData(threatData.length > 0 ? threatData : []);
+      // Handle threat source data
+      if (threatData && Array.isArray(threatData) && threatData.length > 0) {
+        console.log("\n✅ [Threats] Data received:", threatData.length, 'source IPs');
+        console.log("📊 Sample threat:", threatData[0]);
+        setThreatSourceData(threatData);
+      } else {
+        console.warn('\n⚠️ [Threats] No data received from backend');
+        
+        // Helpful message for "Today" with no threats
+        if (selectedRange === 'today') {
+          console.warn('ℹ️ No attack sources detected for TODAY. Try "Last 7 Days" for more data.');
+        }
+        
+        setThreatSourceData([]);
+      }
+      
       setIsLoading(false);
     } catch (error) {
-      console.error('Error fetching dashboard data:', error);
+      console.error('\n❌ Error fetching dashboard data:', error);
       // Keep existing data on error to prevent UI flicker
       setIsLoading(false);
     }
@@ -689,6 +788,49 @@ const Dashboard = () => {
             <Download className="w-4 h-4 mr-2" />
             Generate CSV
           </button>
+
+          {/* Column Selector Dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setShowColumnSelector(!showColumnSelector)}
+              className="flex items-center bg-gray-800/70 hover:bg-gray-800 p-2 rounded-xl text-sm border border-gray-700 text-white transition-colors duration-200"
+              title="Select CSV columns"
+            >
+              <ChevronDown className="w-4 h-4 text-gray-400" />
+            </button>
+
+            {showColumnSelector && (
+              <div className="absolute top-full mt-2 right-0 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-40 w-64 max-h-96 overflow-y-auto">
+                {/* Select All Checkbox */}
+                <div className="p-3 border-b border-gray-700 sticky top-0 bg-gray-800">
+                  <label className="flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={selectedColumns.size === csvColumns.length}
+                      onChange={(e) => handleSelectAllColumns(e.target.checked)}
+                      className="w-4 h-4 rounded border-gray-600 bg-gray-700 cursor-pointer"
+                    />
+                    <span className="ml-2 text-gray-300 font-semibold text-sm">Select All</span>
+                  </label>
+                </div>
+
+                {/* Column List */}
+                <div className="p-2">
+                  {csvColumns.map((column) => (
+                    <label key={column} className="flex items-center p-2 hover:bg-gray-700 rounded cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={selectedColumns.has(column)}
+                        onChange={() => handleColumnToggle(column)}
+                        className="w-4 h-4 rounded border-gray-600 bg-gray-700 cursor-pointer"
+                      />
+                      <span className="ml-2 text-gray-300 text-sm capitalize">{column.replace(/_/g, ' ')}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -753,7 +895,7 @@ const Dashboard = () => {
       <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-20">
 
         {/* 1. Attack Timeline - Line Chart */}
-        <Card className="h-[450px]">
+        <Card className="h-[450px] flex flex-col">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-bold">Attack Timeline</h2>
     
@@ -763,92 +905,120 @@ const Dashboard = () => {
             <span className="flex items-center text-yellow-400"><div className="w-3 h-3 mr-1 rounded-full bg-yellow-400"></div>MEDIUM SEVERITY</span>
             <span className="flex items-center text-green-400"><div className="w-3 h-3 mr-1 rounded-full bg-green-400"></div>LOW SEVERITY</span>
           </div>
-          <ResponsiveContainer width="100%" height="80%">
-            {timelineData.length > 0 ? (
-              <LineChart
-                data={timelineData}
-                margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis 
-                  dataKey="time"
-                  stroke="#9ca3af"
-                  tick={{ fontSize: 10 }}
-                  height={30}
-                  interval="preserveStartEnd"
-                  minTickGap={40}
-                  tickCount={8}
-                  tickFormatter={(value) => {
-                    // if value is ISO date -> show only date
-                    if (value.includes('T')) {
-                      return value.split('T')[0].slice(5); // MM-DD
-                    }
-                    return value;
-                  }}
+          <div className="flex-1 flex items-center justify-center">
+            <ResponsiveContainer width="100%" height="100%">
+              {timelineData.length > 0 ? (
+                <LineChart
+                  data={timelineData}
+                  margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <XAxis 
+                    dataKey="time"
+                    stroke="#9ca3af"
+                    tick={{ fontSize: 10 }}
+                    height={30}
+                    interval="preserveStartEnd"
+                    minTickGap={40}
+                    tickCount={8}
+                    tickFormatter={(value) => {
+                      // if value is ISO date -> show only date
+                      if (value.includes('T')) {
+                        return value.split('T')[0].slice(5); // MM-DD
+                      }
+                      return value;
+                    }}
+                    />
+                  <YAxis  
+                          stroke="#9ca3af"
+                          tick={{ fontSize: 10 }}
+                          domain={[0, 'auto']}
+                          tickCount={5} 
+                          />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '0.5rem' }}
+                    labelStyle={{ color: '#ffffff' }}
                   />
-                <YAxis  
-                        stroke="#9ca3af"
-                        tick={{ fontSize: 10 }}
-                        domain={[0, 'auto']}
-                        tickCount={5} 
-                        />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '0.5rem' }}
-                  labelStyle={{ color: '#ffffff' }}
-                />
-                <Line type="monotone" dataKey="HIGH_SEVERITY" stroke="#ef4444" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="MEDIUM_SEVERITY" stroke="#f59e0b" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="LOW_SEVERITY" stroke="#10b981" strokeWidth={2} dot={false} />
-              </LineChart>
-            ) : (
-              <div className="flex items-center justify-center h-full text-gray-500">
-                {isLoading ? 'Loading timeline data...' : (
-                  <div className="text-center">
-                    <div className="text-gray-400">No data for selected range</div>
-                    <div className="text-xs mt-2 text-gray-600">Try expanding your date range</div>
-                  </div>
-                )}
-              </div>
-            )}
-          </ResponsiveContainer>
+                  <Line type="monotone" dataKey="HIGH_SEVERITY" stroke="#ef4444" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="MEDIUM_SEVERITY" stroke="#f59e0b" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="LOW_SEVERITY" stroke="#10b981" strokeWidth={2} dot={false} />
+                </LineChart>
+              ) : (
+                <div className="flex flex-col items-center justify-center text-center">
+                  {isLoading ? (
+                    <div className="text-gray-400">
+                      <div className="animate-spin mb-3">⟳</div>
+                      Loading timeline data...
+                    </div>
+                  ) : (
+                    <div>
+                      <AlertTriangle className="w-8 h-8 text-gray-500 mx-auto mb-2" />
+                      <div className="text-gray-400 font-semibold">No attack data</div>
+                      <div className="text-xs text-gray-600 mt-3 max-w-xs">
+                        {selectedRange === 'today' 
+                          ? '📋 No attacks detected today. Simulator may not have recent data. Try "Last 7 Days" or check backend logs.' 
+                          : '📋 No attacks in selected range. Try expanding the date range.'}
+                      </div>
+                      <div className="text-xs text-gray-700 mt-2 p-2 bg-gray-800 rounded">
+                        Open browser console (F12) for detailed debugging info
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </ResponsiveContainer>
+          </div>
         </Card>
 
         {/* 2. Top Threat Sources - Bar Chart */}
-        <Card className="h-[450px]">
+        <Card className="h-[450px] flex flex-col">
           <h2 className="text-xl font-bold mb-6">Top Malicious Source IPs</h2>
-          <ResponsiveContainer width="100%" height="90%">
-            {threatSourceData.length > 0 ? (
-              <BarChart
-                data={threatSourceData}
-                margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
-                layout="vertical"
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-                <XAxis type="number" stroke="#9ca3af" tick={{ fontSize: 10 }} />
-                <YAxis type="category" dataKey="name" stroke="#9ca3af" tick={{ fontSize: 10 }} />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '0.5rem' }}
-                  labelStyle={{ color: '#ffffff' }}
-                />
-                <Bar dataKey="threats" radius={[4, 4, 0, 0]} label={{ position: 'right', fill: '#9ca3af', fontSize: 10 }}>
-                  {threatSourceData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
-                  ))}
-                </Bar>
-              </BarChart>
-            ) : (
-              <div className="flex items-center justify-center h-full">
-                {isLoading ? (
-                  <span className="text-gray-500">Loading threat sources...</span>
-                ) : (
-                  <div className="text-center">
-                    <div className="text-gray-400">No threat sources detected</div>
-                    <div className="text-xs mt-2 text-gray-600">No attacks found in selected range</div>
-                  </div>
-                )}
-              </div>
-            )}
-          </ResponsiveContainer>
+          <div className="flex-1 flex items-center justify-center">
+            <ResponsiveContainer width="100%" height="100%">
+              {threatSourceData.length > 0 ? (
+                <BarChart
+                  data={threatSourceData}
+                  margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                  layout="vertical"
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
+                  <XAxis type="number" stroke="#9ca3af" tick={{ fontSize: 10 }} />
+                  <YAxis type="category" dataKey="name" stroke="#9ca3af" tick={{ fontSize: 10 }} width={120} />
+                  <Tooltip 
+                    contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '0.5rem' }}
+                    labelStyle={{ color: '#ffffff' }}
+                  />
+                  <Bar dataKey="threats" radius={[4, 4, 0, 0]} label={{ position: 'right', fill: '#9ca3af', fontSize: 10 }}>
+                    {threatSourceData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              ) : (
+                <div className="flex flex-col items-center justify-center text-center">
+                  {isLoading ? (
+                    <div className="text-gray-400">
+                      <div className="animate-spin mb-3">⟳</div>
+                      Loading threat sources...
+                    </div>
+                  ) : (
+                    <div>
+                      <Shield className="w-8 h-8 text-gray-500 mx-auto mb-2" />
+                      <div className="text-gray-400 font-semibold">No threats detected</div>
+                      <div className="text-xs text-gray-600 mt-3 max-w-xs">
+                        {selectedRange === 'today' 
+                          ? '🛡️ No attack sources today. Simulator may not have recent data. Try "Last 7 Days" or check backend logs.' 
+                          : '🛡️ No attacks in selected range. Try expanding the date range.'}
+                      </div>
+                      <div className="text-xs text-gray-700 mt-2 p-2 bg-gray-800 rounded">
+                        Open browser console (F12) for detailed debugging info
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </ResponsiveContainer>
+          </div>
         </Card>
       </section>
 

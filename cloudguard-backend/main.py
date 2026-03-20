@@ -387,7 +387,7 @@ async def chat(req: ChatRequest):
 router = APIRouter()
 
 @router.get("/api/dashboard/export-csv")
-def export_csv(from_date: str, to_date: str):
+def export_csv(from_date: str, to_date: str, columns: Optional[str] = None):
     response = (
         supabase
         .table("cloudguard_logs")
@@ -405,11 +405,31 @@ def export_csv(from_date: str, to_date: str):
             media_type="text/plain"
         )
 
+    # Parse selected columns from query parameter
+    selected_cols = []
+    if columns:
+        selected_cols = [col.strip() for col in columns.split(',') if col.strip()]
+    
+    # If no columns specified or invalid, use all columns from first row
+    if not selected_cols:
+        selected_cols = list(rows[0].keys())
+    else:
+        # Filter to only include columns that exist in the data
+        available_cols = set(rows[0].keys())
+        selected_cols = [col for col in selected_cols if col in available_cols]
+    
+    # If no valid columns remain, use all
+    if not selected_cols:
+        selected_cols = list(rows[0].keys())
+
     output = io.StringIO()
-    fieldnames = rows[0].keys()
-    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer = csv.DictWriter(output, fieldnames=selected_cols)
     writer.writeheader()
-    writer.writerows(rows)
+    
+    # Write rows with only selected columns
+    for row in rows:
+        filtered_row = {col: row.get(col, '') for col in selected_cols}
+        writer.writerow(filtered_row)
 
     return Response(
         content=output.getvalue(),
@@ -428,6 +448,7 @@ async def get_dashboard_stats(from_date: str, to_date: str):
     logs = get_logs_by_date_range(from_date, to_date)
 
     print("\n===== DASHBOARD STATS DEBUG =====")
+    print(f"Date range: {from_date} to {to_date}")
     print(f"Total rows fetched from DB: {len(logs)}")
 
     attack_count = 0
@@ -443,11 +464,19 @@ async def get_dashboard_stats(from_date: str, to_date: str):
     print(f"Rows treated as ATTACKS: {attack_count}")
 
     if logs:
-        print("Sample row:", {
+        print("First log:", {
+            "created_at": logs[0].get("created_at"),
             "predicted_label": logs[0].get("predicted_label"),
             "attack_type": logs[0].get("attack_type"),
             "confidence": logs[0].get("confidence"),
+            "srcaddr": logs[0].get("srcaddr"),
         })
+        print("Last log:", {
+            "created_at": logs[-1].get("created_at"),
+            "predicted_label": logs[-1].get("predicted_label"),
+        })
+    else:
+        print("⚠️ No logs found in database for this date range!")
     """
     Dashboard KPIs:
     - Total Logs      → COUNT(*) with date filter only
@@ -537,48 +566,71 @@ async def get_threat_sources(from_date: str, to_date: str):
         to_date: ISO 8601 UTC string, e.g., "2025-09-26T23:59:59Z"
     """
     try:
+        # DEBUG: Log incoming date range
+        print("\n===== THREAT SOURCES DEBUG =====")
+        print(f"From date: {from_date}")
+        print(f"To date: {to_date}")
+        
         # STEP 1: Fetch all logs in the date range
         logs = get_logs_by_date_range(from_date, to_date)
+        print(f"Total logs fetched: {len(logs)}")
         
         # STEP 2: Filter to ONLY attack logs (predicted_label != 0)
         # Safely cast predicted_label to int with fallback
         attacks = []
         for log in logs:
+            predicted_label_val = log.get("predicted_label", 0)
             try:
-                predicted_label = int(log.get("predicted_label", 0))
+                predicted_label_val = int(predicted_label_val)
             except (ValueError, TypeError):
-                predicted_label = 0
+                predicted_label_val = 0
             
-            if predicted_label != 0:
+            if predicted_label_val != 0:
                 attacks.append(log)
+        
+        print(f"Attack logs identified: {len(attacks)}")
         
         # Return empty list if no attacks found
         if not attacks:
+            print("No attacks found - returning empty list")
             return []
         
         # STEP 3-4: Group by srcaddr and count, skip null/empty
         source_counts = defaultdict(int)
+        sources_skipped = 0
+        
         for log in attacks:
             srcaddr = log.get("srcaddr", "").strip()
             # CRITICAL: Skip null or empty srcaddr entries
             if not srcaddr:
+                sources_skipped += 1
                 continue
             source_counts[srcaddr] += 1
         
+        print(f"Unique source IPs: {len(source_counts)}")
+        print(f"Sources skipped (empty): {sources_skipped}")
+        
         # Return empty list if no valid srcaddr entries
         if not source_counts:
+            print("No valid source addresses - returning empty list")
             return []
         
         # STEP 5: Sort by attack count descending
         sorted_sources = sorted(source_counts.items(), key=lambda x: x[1], reverse=True)
         
+        print(f"Top sources (all): {sorted_sources}")
+        
         # STEP 6: Return top 5 with color assignments
         colors = ['#ef4444', '#f59e0b', '#60a5fa', '#10b981', '#a855f7']
         
-        return [
+        result = [
             {"name": name, "threats": count, "color": colors[i]}
             for i, (name, count) in enumerate(sorted_sources[:5])
         ]
+        
+        print(f"Returning {len(result)} threat sources")
+        return result
+        
     except Exception as e:
         print(f"[ERROR] get_threat_sources: {e}")
         import traceback
@@ -692,14 +744,27 @@ async def get_timeline_data(from_date: str, to_date: str, interval: str = "hour"
         ]
     """
     try:
+        # DEBUG: Log the incoming date range
+        print("\n===== TIMELINE DEBUG =====")
+        print(f"Requested interval: {interval}")
+        print(f"From date (received): {from_date}")
+        print(f"To date (received): {to_date}")
+        
         # STEP 1: Parse from_date and to_date as UTC datetimes
         # Supabase returns ISO 8601 UTC strings: "2026-01-15T14:55:57.799066+00:00"
         from_dt = datetime.fromisoformat(from_date.replace("Z", "+00:00"))
         to_dt = datetime.fromisoformat(to_date.replace("Z", "+00:00"))
         
+        print(f"From date (parsed): {from_dt}")
+        print(f"To date (parsed): {to_dt}")
+        
         # STEP 2: Generate full time buckets for the entire range
         # This includes ALL buckets even if no attacks occurred
         time_buckets = generate_time_buckets(from_dt, to_dt, interval)
+        print(f"Generated {len(time_buckets)} time buckets")
+        if time_buckets:
+            print(f"First bucket: {time_buckets[0]}")
+            print(f"Last bucket: {time_buckets[-1]}")
         
         # STEP 3: Create a dictionary mapping time keys to bucket objects
         # This enables O(1) lookup when incrementing severity counters
@@ -707,22 +772,46 @@ async def get_timeline_data(from_date: str, to_date: str, interval: str = "hour"
         
         # STEP 4: Fetch all logs in the date range
         logs = get_logs_by_date_range(from_date, to_date)
+        print(f"Total logs fetched from DB: {len(logs)}")
+        
+        if logs:
+            print(f"First log timestamp: {logs[0].get('created_at')}")
+            print(f"Last log timestamp: {logs[-1].get('created_at')}")
         
         # STEP 5-6: Iterate over logs and classify by severity
-        for log in logs:
+        attacks_processed = 0
+        attacks_skipped_not_attack = 0
+        attacks_skipped_no_timestamp = 0
+        attacks_skipped_no_bucket = 0
+        
+        # Track severity distribution
+        severity_counts = {"HIGH_SEVERITY": 0, "MEDIUM_SEVERITY": 0, "LOW_SEVERITY": 0}
+        bucket_update_log = []
+        
+        for i, log in enumerate(logs):
             # CRITICAL: Only process attack logs (predicted_label != 0)
             # Ignore benign traffic (predicted_label == 0)
-            if int(log.get("predicted_label", 0)) == 0:
+            predicted_label_val = log.get("predicted_label", 0)
+            try:
+                predicted_label_val = int(predicted_label_val)
+            except (ValueError, TypeError):
+                predicted_label_val = 0
+            
+            if predicted_label_val == 0:
+                attacks_skipped_not_attack += 1
                 continue
             
             created_at_str = log.get("created_at", "")
             if not created_at_str:
+                attacks_skipped_no_timestamp += 1
                 continue
             
             try:
                 # Parse log timestamp
                 created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-            except:
+            except Exception as parse_err:
+                print(f"Failed to parse timestamp '{created_at_str}': {parse_err}")
+                attacks_skipped_no_timestamp += 1
                 continue
             
             # Generate time key matching bucket format
@@ -734,21 +823,67 @@ async def get_timeline_data(from_date: str, to_date: str, interval: str = "hour"
             # Skip if this log falls outside the expected bucket range
             # (defensive check in case of data inconsistencies)
             if time_key not in bucket_dict:
+                print(f"⚠️ Time key '{time_key}' not in buckets for log at {created_at}")
+                attacks_skipped_no_bucket += 1
                 continue
             
             # Classify severity STRICTLY by confidence column
             # confidence is a double precision float from 0.0 to 1.0
-            confidence = float(log.get("confidence", 0)) if log.get("confidence") else 0
+            confidence_val = log.get("confidence", 0)
             
-            if confidence >= 0.80:
+            # Handle various confidence formats (string, float, int, None)
+            if confidence_val is None:
+                confidence_val = 0
+            try:
+                confidence_val = float(confidence_val)
+            except (ValueError, TypeError):
+                confidence_val = 0
+            
+            # Classify severity and normalize to uppercase
+            if confidence_val >= 0.80:
                 severity = "HIGH_SEVERITY"
-            elif confidence >= 0.50:
+            elif confidence_val >= 0.50:
                 severity = "MEDIUM_SEVERITY"
             else:
                 severity = "LOW_SEVERITY"
             
+            # Verify severity key exists in bucket
+            if severity not in bucket_dict[time_key]:
+                print(f"❌ ERROR: Severity key '{severity}' not found in bucket keys: {list(bucket_dict[time_key].keys())}")
+                continue
+            
             # Increment the severity counter for this time bucket
             bucket_dict[time_key][severity] += 1
+            severity_counts[severity] += 1
+            attacks_processed += 1
+            
+            # Log first few updates to verify buckets are being modified
+            if attacks_processed <= 5:
+                bucket_update_log.append({
+                    'log_index': i,
+                    'time_key': time_key,
+                    'severity': severity,
+                    'confidence': confidence_val,
+                    'bucket_after_update': dict(bucket_dict[time_key]),
+                })
+        
+        print(f"\nAttacks processed: {attacks_processed}")
+        print(f"Severity distribution: {severity_counts}")
+        print(f"Skipped (not attack): {attacks_skipped_not_attack}")
+        print(f"Skipped (no timestamp): {attacks_skipped_no_timestamp}")
+        print(f"Skipped (no bucket match): {attacks_skipped_no_bucket}")
+        
+        # Show first few bucket updates to verify increments
+        if bucket_update_log:
+            print(f"\nFirst {len(bucket_update_log)} bucket updates:")
+            for update in bucket_update_log:
+                print(f"  Log {update['log_index']}: {update['time_key']} → {update['severity']} (confidence={update['confidence']:.2f})")
+                print(f"    → Bucket state: {update['bucket_after_update']}")
+        
+        # CRITICAL: Show final state of some buckets before returning
+        print(f"\nSample buckets before return:")
+        for i, bucket in enumerate(time_buckets[:3]):  # Show first 3 buckets
+            print(f"  Bucket {i}: {bucket}")
         
         # STEP 7: Return ALL buckets (including zero-filled ones)
         # Time buckets are already in chronological order from generate_time_buckets()
