@@ -8,7 +8,7 @@ import {
 import { ComposableMap, Geographies, Geography, Marker, Line as RSMLine, ZoomableGroup, Graticule } from "react-simple-maps";
 
 // --- API Configuration ---
-const API_BASE_URL = 'http://127.0.0.1:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
 // Mock Chat History (now with stable ids)
 const initialChatHistory = [
@@ -86,7 +86,7 @@ const Chatbot = ({ isChatOpen, toggleChat }) => {
     setIsLoading(true);
 
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/chat', {
+      const res = await fetch(`${API_BASE_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: trimmed }),

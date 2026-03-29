@@ -85,12 +85,38 @@ app = FastAPI()
 
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(backfill_regions_bg())
+    # Only run background task if not in Vercel serverless environment
+    if not os.getenv("VERCEL"):
+        asyncio.create_task(backfill_regions_bg())
+
+@app.get("/api/cron/backfill")
+async def cron_backfill():
+    """Endpoint for Vercel Cron to trigger backfilling logic periodically"""
+    try:
+        res = supabase.table("cloudguard_logs").select("id, srcaddr").filter("region", "is", "null").limit(50).execute()
+        data = res.data or []
+        if not data:
+            res2 = supabase.table("cloudguard_logs").select("id, srcaddr").eq("region", "").limit(50).execute()
+            data = res2.data or []
+        
+        count = 0
+        for row in data:
+            ip = row.get("srcaddr")
+            if ip:
+                region = await asyncio.to_thread(get_region_for_ip, ip)
+                supabase.table("cloudguard_logs").update({"region": region}).eq("id", row["id"]).execute()
+                count += 1
+                await asyncio.sleep(1.5)
+        
+        return {"status": "success", "processed": count}
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "traceback": traceback.format_exc()}
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
