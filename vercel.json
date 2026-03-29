@@ -12,14 +12,14 @@
       }
     }
   ],
-  "routes": [
+  "rewrites": [
     {
-      "src": "/api/(.*)",
-      "dest": "/cloudguard-backend/main.py"
+      "source": "/api/(.*)",
+      "destination": "/cloudguard-backend/main.py"
     },
     {
-      "src": "/(.*)",
-      "dest": "/$1"
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
