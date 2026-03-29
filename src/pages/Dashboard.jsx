@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell, Legend, Brush
 } from 'recharts';
 import {
   Calendar, ChevronDown, Download, AlertTriangle, ArrowRight, TrendingUp, Cpu, MessageSquare, Send, X, Clock, Database, Percent, Shield, MapPin, Globe
@@ -269,6 +269,18 @@ const Dashboard = () => {
 
   // CSV column selection state
   const [showColumnSelector, setShowColumnSelector] = useState(false);
+  const [tooltipContent, setTooltipContent] = useState("");
+  const [tooltipPosition, setTooltipPosition] = useState({ x: 0, y: 0 });
+  const [mapCenter, setMapCenter] = useState([20, 20]);
+  const [mapZoom, setMapZoom] = useState(1.2);
+  const [isAnimatingMap, setIsAnimatingMap] = useState(false);
+
+  const animateMapTo = (center, zoom) => {
+    setIsAnimatingMap(true);
+    setMapCenter(center);
+    setMapZoom(zoom);
+    setTimeout(() => setIsAnimatingMap(false), 800);
+  };
   const csvColumns = [
     'created_at', 'srcport', 'dstport', 'protocol', 'packets', 'bytes', 
     'start', 'end', 'tcp_flags', 'predicted_label', 'confidence', 'id', 
@@ -764,6 +776,9 @@ const Dashboard = () => {
         .custom-scrollbar::-webkit-scrollbar-track {
           background: #1f2937;
         }
+        .map-animating .rsm-zoomable-group {
+          transition: transform 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+        }
       `}</style>
 
       {/* --- Top Header and Controls --- */}
@@ -920,17 +935,12 @@ const Dashboard = () => {
             <h2 className="text-xl font-bold">Attack Timeline</h2>
     
           </div>
-          <div className="flex justify-center space-x-4 text-xs mb-4">
-            <span className="flex items-center text-red-400"><div className="w-3 h-3 mr-1 rounded-full bg-red-400"></div>HIGH SEVERITY</span>
-            <span className="flex items-center text-yellow-400"><div className="w-3 h-3 mr-1 rounded-full bg-yellow-400"></div>MEDIUM SEVERITY</span>
-            <span className="flex items-center text-green-400"><div className="w-3 h-3 mr-1 rounded-full bg-green-400"></div>LOW SEVERITY</span>
-          </div>
           <div className="flex-1 flex items-center justify-center">
             <ResponsiveContainer width="100%" height="100%">
               {timelineData.length > 0 ? (
                 <LineChart
                   data={timelineData}
-                  margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                  margin={{ top: 5, right: 20, left: 10, bottom: 20 }}
                 >
                   <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                   <XAxis 
@@ -959,9 +969,11 @@ const Dashboard = () => {
                     contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '0.5rem' }}
                     labelStyle={{ color: '#ffffff' }}
                   />
-                  <Line type="monotone" dataKey="HIGH_SEVERITY" stroke="#ef4444" strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="MEDIUM_SEVERITY" stroke="#f59e0b" strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="LOW_SEVERITY" stroke="#10b981" strokeWidth={2} dot={false} />
+                  <Legend verticalAlign="top" height={36} wrapperStyle={{ fontSize: '12px', color: '#9ca3af' }} />
+                  <Line type="monotone" name="High Severity" dataKey="HIGH_SEVERITY" stroke="#ef4444" strokeWidth={2} activeDot={{ r: 8 }} dot={{ r: 3 }} />
+                  <Line type="monotone" name="Medium Severity" dataKey="MEDIUM_SEVERITY" stroke="#f59e0b" strokeWidth={2} activeDot={{ r: 8 }} dot={{ r: 3 }} />
+                  <Line type="monotone" name="Low Severity" dataKey="LOW_SEVERITY" stroke="#10b981" strokeWidth={2} activeDot={{ r: 8 }} dot={{ r: 3 }} />
+                  <Brush dataKey="time" height={30} stroke="#3b82f6" fill="#1f2937" tickFormatter={() => ''} />
                 </LineChart>
               ) : (
                 <div className="flex flex-col items-center justify-center text-center">
@@ -1005,12 +1017,14 @@ const Dashboard = () => {
                   <XAxis type="number" stroke="#9ca3af" tick={{ fontSize: 10 }} />
                   <YAxis type="category" dataKey="name" stroke="#9ca3af" tick={{ fontSize: 10 }} width={120} />
                   <Tooltip 
+                    cursor={{ fill: 'rgba(59, 130, 246, 0.1)' }}
                     contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #4b5563', borderRadius: '0.5rem' }}
                     labelStyle={{ color: '#ffffff' }}
                   />
-                  <Bar dataKey="threats" radius={[4, 4, 0, 0]} label={{ position: 'right', fill: '#9ca3af', fontSize: 10 }}>
+                  <Legend verticalAlign="top" height={36} wrapperStyle={{ fontSize: '12px', color: '#9ca3af' }} />
+                  <Bar dataKey="threats" name="Threats" radius={[0, 4, 4, 0]} label={{ position: 'right', fill: '#9ca3af', fontSize: 10 }}>
                     {threatSourceData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
+                      <Cell key={`cell-${index}`} fill={entry.color} style={{ cursor: 'pointer', transition: 'fill 0.3s ease' }} className="hover:opacity-80"/>
                     ))}
                   </Bar>
                 </BarChart>
@@ -1058,7 +1072,15 @@ const Dashboard = () => {
                   const total = loc.benign + loc.attack;
                   const attackPct = total > 0 ? Math.round((loc.attack / total) * 100) : 0;
                   return (
-                    <div key={idx} className="bg-gray-800 rounded-lg p-3 border border-gray-700">
+                    <div 
+                      key={idx} 
+                      className="bg-gray-800 rounded-lg p-3 border border-gray-700 cursor-pointer hover:bg-gray-700 transition"
+                      onClick={() => {
+                        if (loc.coordinates && loc.coordinates[0] !== 0) {
+                          animateMapTo(loc.coordinates, 4);
+                        }
+                      }}
+                    >
                       <div className="flex justify-between items-center mb-2">
                         <span className="font-semibold text-gray-200 text-sm flex items-center">
                           <MapPin className="w-3 h-3 mr-1 text-gray-400" /> {loc.region}
@@ -1087,13 +1109,37 @@ const Dashboard = () => {
 
         {/* Attack Map */}
         <Card className="lg:col-span-2 flex flex-col h-[450px] relative overflow-hidden">
-          <h2 className="text-xl font-bold mb-2 flex items-center z-10">
-            <MapPin className="w-5 h-5 mr-2 text-red-500" />
-            Global Threat Map
-          </h2>
-          <div className="absolute inset-0 pt-12 flex items-center justify-center bg-gray-900 border-t border-blue-900/30">
-            <ComposableMap projection="geoMercator" projectionConfig={{ scale: 130 }} className="opacity-90">
-              <ZoomableGroup center={[20, 20]} zoom={1} minZoom={1} maxZoom={8}>
+          <div className="flex justify-between items-center z-10 p-2">
+            <h2 className="text-xl font-bold mb-2 flex items-center">
+              <MapPin className="w-5 h-5 mr-2 text-red-500" />
+              Global Threat Map
+            </h2>
+            <div className="flex space-x-2">
+              <button 
+                onClick={() => animateMapTo([20, 20], 1.2)}
+                className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1 rounded border border-gray-600 transition"
+              >
+                Reset Zoom
+              </button>
+              <button 
+                onClick={() => window.open('/map', '_blank')}
+                className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded flex items-center transition"
+              >
+                Full Page <ArrowRight className="w-3 h-3 ml-1" />
+              </button>
+            </div>
+          </div>
+          <div className={`absolute inset-0 pt-16 flex items-center justify-center bg-gray-900 border-t border-blue-900/30 ${isAnimatingMap ? 'map-animating' : ''}`}>
+            <ComposableMap projection="geoMercator" projectionConfig={{ scale: 150 }} className="opacity-90">
+              <ZoomableGroup 
+                center={mapCenter} 
+                zoom={mapZoom} 
+                onMoveEnd={({ coordinates, zoom }) => {
+                  setMapCenter(coordinates);
+                  setMapZoom(zoom);
+                }}
+                minZoom={1} maxZoom={16}
+              >
                 <Graticule stroke="#1e293b" strokeWidth={0.5} />
                 <Geographies geography="https://unpkg.com/world-atlas@2.0.2/countries-110m.json">
                   {({ geographies }) =>
@@ -1104,9 +1150,17 @@ const Dashboard = () => {
                         fill="#020617"
                         stroke="#3b82f6"
                         strokeWidth={0.5}
+                        onMouseEnter={(e) => {
+                          setTooltipContent(`Country: ${geo.properties.name}`);
+                          setTooltipPosition({ x: e.clientX, y: e.clientY });
+                        }}
+                        onMouseMove={(e) => {
+                          setTooltipPosition({ x: e.clientX, y: e.clientY });
+                        }}
+                        onMouseLeave={() => setTooltipContent("")}
                         style={{
-                          default: { outline: "none" },
-                          hover: { fill: "#1e293b", stroke: "#60a5fa", outline: "none", transition: "all 250ms" },
+                          default: { outline: "none", transition: "all 250ms" },
+                          hover: { fill: "#1e293b", stroke: "#60a5fa", outline: "none", transition: "all 250ms", cursor: "pointer" },
                           pressed: { outline: "none" },
                         }}
                       />
@@ -1138,9 +1192,25 @@ const Dashboard = () => {
 
                   return (
                     <g key={`loc-${idx}`}>
-                      <Marker coordinates={loc.coordinates}>
-                        <circle r={3} fill={loc.attack > 0 ? "#ef4444" : "#10b981"} />
-                        <text y={-8} x={5} fill="#9ca3af" fontSize={6} fontWeight="bold">{loc.name}</text>
+                      <Marker 
+                        coordinates={loc.coordinates}
+                        onMouseEnter={(e) => {
+                          setTooltipContent(`Region: ${loc.name} -> ${loc.attack} Attacks | ${loc.benign} Normal`);
+                          setTooltipPosition({ x: e.clientX, y: e.clientY });
+                        }}
+                        onMouseMove={(e) => {
+                          setTooltipPosition({ x: e.clientX, y: e.clientY });
+                        }}
+                        onMouseLeave={() => setTooltipContent("")}
+                        onClick={() => animateMapTo(loc.coordinates, 4)}
+                        style={{ cursor: "pointer" }}
+                      >
+                        <circle 
+                          r={loc.attack > 0 ? 5 : 3} 
+                          fill={loc.attack > 0 ? "#ef4444" : "#10b981"} 
+                          className={loc.attack > 0 ? "animate-pulse" : ""} 
+                        />
+                        <text y={-8} x={5} fill="#9ca3af" fontSize={6} fontWeight="bold" className="pointer-events-none">{loc.name}</text>
                       </Marker>
                       
                       {!isIndia && draws.map((draw, i) => (
@@ -1166,6 +1236,17 @@ const Dashboard = () => {
           </div>
         </Card>
       </section>
+
+      {/* Map Tooltip */}
+      {tooltipContent && (
+        <div 
+          className="fixed z-50 px-3 py-2 text-xs font-semibold text-white bg-gray-800 border border-gray-600 rounded-lg shadow-xl pointer-events-none transform -translate-x-1/2 -translate-y-full"
+          style={{ top: tooltipPosition.y - 15, left: tooltipPosition.x }}
+        >
+          {tooltipContent}
+        </div>
+      )}
+
       {/* --- AI Chatbot Interface (Fixed) --- */}
       <Chatbot isChatOpen={isChatOpen} toggleChat={toggleChat} />
     </div>
