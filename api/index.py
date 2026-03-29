@@ -22,15 +22,18 @@ load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+supabase_error = None
 
 try:
     if SUPABASE_URL and SUPABASE_KEY:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
     else:
         supabase = None
+        supabase_error = "Keys missing"
 except Exception as e:
     print(f"Failed to intialize Supabase: {e}")
     supabase = None
+    supabase_error = str(e)
 
 # =====================
 # GEMINI LLM SETUP
@@ -89,6 +92,15 @@ async def backfill_regions_bg():
             await asyncio.sleep(60)
 
 app = FastAPI()
+
+@app.get("/api/debug-env")
+def debug_env():
+    return {
+        "supabase_url": SUPABASE_URL,
+        "supabase_is_none": supabase is None,
+        "has_key": "SUPABASE_KEY" in os.environ,
+        "supabase_error": supabase_error
+    }
 
 @app.on_event("startup")
 async def startup_event():
